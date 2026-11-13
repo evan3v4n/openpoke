@@ -46,7 +46,7 @@ RECENT_USE_MAX_AGE_DAYS = 1.0
 # recency) only breaks ties: it is scaled down so it cannot outrank an exact match.
 # A live "check judy brown" turn scored Chen 1.758 vs Brown 1.750 before this existed.
 CONTEXT_SCALE_WITH_CONTENT = 0.4
-STRONG_KEYWORD_SCORE = 0.6  # roughly: the query's words appear in the agent's name
+STRONG_KEYWORD_SCORE = 0.25  # the query's words clearly appear in an agent's fields
 
 # Agents whose score is within this of the best content match count as tied: the message
 # does not say which of them it means (e.g. "Did Judy reply?" with ten Judys).
@@ -56,6 +56,7 @@ RECENCY_HALF_LIFE_DAYS = 3.0
 # Match strength per source.
 ENTITY_EMAIL = 1.0
 ENTITY_NAME = 0.7
+PARTIAL_NAME_FLOOR = 0.6  # a name matched by one of its tokens scores this share of ENTITY_NAME
 ENTITY_EXTRA_PERSON = 0.1  # bonus per additional matched person, capped below
 ENTITY_EXTRA_CAP = 0.3
 
@@ -191,6 +192,7 @@ class AgentRetriever:
         recent_pad: int = 2,
         forced_names: Sequence[str] = (),
         use_recent: bool = True,
+        require_content: bool = False,
     ) -> Shortlist:
         """Top agents for `message`, each with the reasons it was chosen.
 
@@ -198,6 +200,8 @@ class AgentRetriever:
         `recent_pad` adds the most recently active agents that did not otherwise rank,
         a safety net for follow-ups that carry no content. `use_recent` boosts the agents
         dispatched to in the last few turns; explicit searches turn it off.
+        `require_content` keeps only agents whose person/keyword match the message, so an unsent
+        draft or reminder alone never makes an agent a search result.
         """
 
         rows = self._roster.agent_rows()
@@ -217,11 +221,14 @@ class AgentRetriever:
 
         scored: Dict[str, Candidate] = {}
         entity_scores, entity_reasons, entity_emails = self._entity_scores(
-            people_rows, query_emails, query_token_set
+            people_rows, query_emails, query_token_set, set(_TOKEN_RE.findall((message or "").lower()))
         )
         keyword_scores = self._keyword_scores(rows, people_rows, query_tokens)
         explicit = bool(entity_scores) or max(keyword_scores.values(), default=0.0) >= STRONG_KEYWORD_SCORE
         context_scale = CONTEXT_SCALE_WITH_CONTENT if explicit else 1.0
+        # An open draft breaks ties between agents for the same person, but must not outrank an
+        # agent that matches the message's topic ("summarize my newsletters" vs an unsent draft).
+        loop_scale = 1.0 if entity_scores else context_scale
 
         for name, row in by_name.items():
             entity = entity_scores.get(name, 0.0)
@@ -236,7 +243,7 @@ class AgentRetriever:
             score = (
                 W_ENTITY * entity
                 + W_KEYWORD * keyword
-                + W_LOOP * loop
+                + loop_scale * W_LOOP * loop
                 + context_scale * (W_RECENCY * recency + W_RECENT_USE * used)
             )
             reasons = list(entity_reasons.get(name, []))
@@ -252,6 +259,7 @@ class AgentRetriever:
                 reasons.append(f"{trigger_count} active reminder{'s' if trigger_count != 1 else ''}")
 
             has_signal = bool(entity or keyword or loop or used)
+            has_signal = bool(entity or keyword) if require_content else has_signal
             if has_signal and score >= MIN_SCORE:
                 scored[name] = Candidate(
                     name=name,
@@ -324,7 +332,9 @@ class AgentRetriever:
     def search(self, query: str, limit: int = 8) -> List[Candidate]:
         """Explicit lookup (the find_agents tool): signal-bearing matches only, no padding."""
 
-        return self.candidates(query, limit=limit, recent_pad=0, use_recent=False)
+        return self.candidates(
+            query, limit=limit, recent_pad=0, use_recent=False, require_content=True
+        )
 
     # ------------------------------------------------------------------ signals
 
@@ -342,7 +352,10 @@ class AgentRetriever:
 
     @staticmethod
     def _entity_scores(
-        people_rows: Iterable, query_emails: Set[str], query_tokens: Set[str]
+        people_rows: Iterable,
+        query_emails: Set[str],
+        query_tokens: Set[str],
+        query_words: Set[str] = frozenset(),
     ) -> tuple[Dict[str, float], Dict[str, List[str]], Dict[str, frozenset]]:
         """Score agents by the people in the message: exact email, or a name/handle token."""
 
@@ -357,7 +370,12 @@ class AgentRetriever:
                 if not hits:
                     continue
                 label = display or email
-                strength, why = ENTITY_NAME, f"matches {label}"
+                # Saying the whole name beats saying one part of it ("dave garcia" vs "dave smith").
+                # Short parts ("Jo") are dropped by tokenize, so count them from the raw words.
+                parts = set(_TOKEN_RE.findall(display.lower())) or handle
+                covered = len(parts & query_words) / len(parts) if parts else 1.0
+                strength = ENTITY_NAME * (PARTIAL_NAME_FLOOR + (1.0 - PARTIAL_NAME_FLOOR) * covered)
+                why = f"matches {label}"
             matched.setdefault(agent, {})[email] = (strength, why)
 
         scores: Dict[str, float] = {}

@@ -212,5 +212,103 @@ class Ambiguity(JudyRosterCase):
         self.assertEqual(self.retriever.retrieve("check again").tied_names, [])
 
 
+class RealisticRosterAccuracy(unittest.TestCase):
+    """Does the top-ranked agent match the one a person would pick, on a mixed roster?"""
+
+    def setUp(self) -> None:
+        self.roster, _ = make_roster()
+        self.triggers: dict = {"Stretch Reminder": 1}
+        self.retriever = AgentRetriever(self.roster, trigger_counts=lambda: self.triggers)
+
+        def person(agent: str, email: str, name: str, subject: str = "", summary: str = "") -> None:
+            self.roster.touch(agent, f"Email {email}")
+            self.roster.record_activity(
+                agent, [PersonRef(email=email, name=name, role="recipient")], [], [subject] if subject else []
+            )
+            if summary:
+                self.roster.set_summary(agent, summary)
+
+        def topic(agent: str, summary: str, subject: str = "", people: tuple = ()) -> None:
+            self.roster.touch(agent, summary)
+            refs = [PersonRef(email=e, name=n, role="recipient") for e, n in people]
+            self.roster.record_activity(agent, refs, [], [subject] if subject else [])
+            self.roster.set_summary(agent, summary)
+
+        person("Email to Alice Chen", "alice.chen@piedpiper.com", "Alice Chen", "Lunch tomorrow?")
+        person("Email to Alice Park", "alice.park@gmail.com", "Alice Park", "Apartment lease renewal", "Asked Alice about lease renewal.")
+        person("Email to Bob Chen", "bob@chenlaw.com", "Bob Chen", "Contract review")
+        person("Email to Carol Diaz", "carol.diaz@acme.com", "Carol Diaz", "Q3 planning")
+        for first in ("Dana", "Eli", "Fay", "Gus", "Hana", "Ian", "Jo", "Kyle", "Lena", "Max"):
+            person(f"Email to {first} Smith", f"{first.lower()}.smith@example.com", f"{first} Smith")
+        for last in ("Brown", "Garcia", "Patel", "Nguyen"):
+            person(f"Email to Judy {last}", f"judy.{last.lower()}@example.com", f"Judy {last}")
+        topic("Vercel Job Offer", "Negotiating the software engineer offer from Vercel; recruiter is Sam Lee.",
+              "Software Engineer offer - Vercel", (("sam.lee@vercel.com", "Sam Lee"),))
+        topic("Q3 Budget", "Collected Q3 budget numbers from finance; CFO needs final sheet.",
+              "Q3 budget numbers", (("cfo@corp.com", "Pat Rowe"),))
+        topic("Flight to Tokyo", "Searching flights to Tokyo in March; confirmation emails from United.",
+              "United itinerary NRT", (("noreply@united.com", "United"),))
+        topic("Dentist Appointment", "Booked dentist appointment with Dr. Kim next Tuesday 3pm.", "Dentist appointment confirmation")
+        topic("Stretch Reminder", "Reminder every hour to stretch.")
+        topic("Weekly Newsletter Digest", "Summarized unread newsletters from Substack and Morning Brew.",
+              "Morning Brew", (("hi@morningbrew.com", "Morning Brew"),))
+        topic("Landlord Rent Issue", "Emailing landlord Tom Hale about broken heater and rent.",
+              "Broken heater", (("tom.hale@rentco.com", "Tom Hale"),))
+        topic("Mom Birthday Plans", "Planning mom's birthday dinner; talked to restaurant Nobu.",
+              "Birthday dinner reservation", (("res@nobu.com", "Nobu"),))
+        for i in range(25):
+            topic(f"Misc Task {i}", f"One-off lookup number {i}.", f"Misc {i}")
+        # An unsent draft makes Q3 Budget a magnet for contentless follow-ups; it must not win topic requests.
+        self.roster.open_draft("Q3 Budget", "d1", "cfo@corp.com", "Q3 numbers")
+
+    def top(self, message: str) -> str:
+        return self.retriever.retrieve(message).candidates[0].name
+
+    def test_correct_top_agent_for_each_request(self) -> None:
+        cases = {
+            "Did Alice Chen reply to my lunch invite?": "Email to Alice Chen",
+            "forward this to alice.park@gmail.com": "Email to Alice Park",
+            "any word from Carol?": "Email to Carol Diaz",
+            "what did Diaz say": "Email to Carol Diaz",
+            "email dana smith again": "Email to Dana Smith",
+            "follow up with judy patel": "Email to Judy Patel",
+            "email Dana": "Email to Dana Smith",
+            "message Alice about the lease": "Email to Alice Park",
+            "what's the latest on the Vercel offer": "Vercel Job Offer",
+            "did Sam Lee get back to me": "Vercel Job Offer",
+            "update on the q3 budget": "Q3 Budget",
+            "CHECK THE BUDGET": "Q3 Budget",
+            "any update on my Tokyo flights": "Flight to Tokyo",
+            "check the united confirmation": "Flight to Tokyo",
+            "when is my dentist appointment": "Dentist Appointment",
+            "did the landlord respond about the heater": "Landlord Rent Issue",
+            "confirm the birthday dinner reservation": "Mom Birthday Plans",
+            "summarize my newsletters again": "Weekly Newsletter Digest",
+            "stop the stretch reminder": "Stretch Reminder",
+            "yes send it": "Q3 Budget",
+            "looks good, go ahead": "Q3 Budget",
+        }
+        wrong = {m: self.top(m) for m, want in cases.items() if self.top(m) != want}
+        self.assertEqual(wrong, {})
+
+    def test_ambiguous_names_are_flagged_not_guessed(self) -> None:
+        self.assertGreaterEqual(len(self.retriever.retrieve("did judy reply?").tied_names), 2)
+        self.assertGreaterEqual(len(self.retriever.retrieve("email smith").tied_names), 2)
+        self.assertEqual(self.retriever.retrieve("email dana smith again").tied_names, [])
+
+    def test_unknown_subjects_have_no_content_match(self) -> None:
+        for message in (
+            "book me a haircut at Supercuts",
+            "email zelda fitzgerald about the gala",
+            "what's the weather in Boston",
+        ):
+            shortlist = self.retriever.retrieve(message)
+            self.assertFalse([c for c in shortlist.candidates if c.content_score >= 0.5], message)
+
+    def test_shortlist_stays_small_on_a_large_roster(self) -> None:
+        for message in ("did judy reply?", "email smith", "yes send it", "anything about budget"):
+            self.assertLessEqual(len(self.retriever.retrieve(message).candidates), 8, message)
+
+
 if __name__ == "__main__":
     unittest.main()
