@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from ..services.execution import get_agent_retriever, get_agent_roster
+from ..services.execution import get_activity_tracker, get_agent_retriever, get_agent_roster
 
 
 
@@ -44,6 +44,12 @@ router = APIRouter(prefix="/agents", tags=["agents"], dependencies=[Depends(_req
 def list_agents() -> Dict[str, Any]:
     entries = get_agent_roster().get_entries()
     return {"count": len(entries), "agents": entries}
+
+
+@router.get("/active")
+# Running execution agents (and just-finished ones) with their live event feed
+def active_agents() -> Dict[str, Any]:
+    return {"runs": get_activity_tracker().snapshot()}
 
 
 @router.get("/search")

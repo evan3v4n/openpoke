@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from .agent import ExecutionAgent
 from .tools import get_tool_schemas, get_tool_registry
 from ...config import get_settings
-from ...services.execution import get_agent_roster
+from ...services.execution import get_activity_tracker, get_agent_roster
 from ...services.execution.ambiguity import (
     SEND_ACCOUNT_UNKNOWN_ERROR,
     SEND_NOT_CONFIRMED_ERROR,
@@ -55,6 +55,7 @@ class ExecutionAgentRuntime:
     # Main execution loop for running agent with LLM calls and tool execution
     async def execute(self, instructions: str) -> ExecutionResult:
         """Execute the agent with given instructions."""
+        activity = get_activity_tracker()
         try:
             # Build system prompt with history
             system_prompt = self.agent.build_system_prompt_with_history()
@@ -70,6 +71,7 @@ class ExecutionAgentRuntime:
                 logger.info(
                     f"[{self.agent.name}] Requesting plan (iteration {iteration + 1})"
                 )
+                activity.add("thinking", "Thinking…" if iteration == 0 else "Thinking about the result…")
                 response = await self._make_llm_call(system_prompt, messages, with_tools=True)
                 assistant_message = response.get("choices", [{}])[0].get("message", {})
 
@@ -111,6 +113,7 @@ class ExecutionAgentRuntime:
 
                     tools_executed.append(tool_name)
                     logger.info(f"[{self.agent.name}] Executing tool: {tool_name}")
+                    activity.add("tool_call", f"{tool_name} {self._safe_json_dump(tool_args)}")
 
                     refusal, sender = self._check_send(tool_name, tool_args)
                     if refusal:
@@ -119,6 +122,11 @@ class ExecutionAgentRuntime:
                         success, result = await self._execute_tool(tool_name, tool_args)
                         if success and sender and isinstance(result, dict):
                             result["sent_from"] = sender  # so the report can say which mailbox sent it
+                    if success:
+                        activity.add("tool_result", f"{tool_name} finished")
+                    else:
+                        err = result.get("error") if isinstance(result, dict) else str(result)
+                        activity.add("error", f"{tool_name} failed: {err}")
 
                     if success:
                         logger.info(f"[{self.agent.name}] Tool {tool_name} completed successfully")

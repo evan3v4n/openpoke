@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 from .runtime import ExecutionAgentRuntime, ExecutionResult
 from ...config import get_settings
 from ...logging_config import logger
+from ...services.execution import current_run, get_activity_tracker
 
 
 @dataclass
@@ -60,6 +61,10 @@ class ExecutionBatchManager:
 
         batch_id = await self._register_pending_execution(agent_name, instructions, request_id)
 
+        tracker = get_activity_tracker()
+        run_id = tracker.start(agent_name, instructions)
+        current_run.set(run_id)  # inherited by the task wait_for creates below
+
         try:
             logger.info(f"[{agent_name}] Execution started")
             runtime = ExecutionAgentRuntime(agent_name=agent_name)
@@ -87,6 +92,11 @@ class ExecutionBatchManager:
             )
         finally:
             self._pending.pop(request_id, None)
+            current_run.set(None)
+
+        if result.error:
+            tracker.add("error", result.error, run_id=run_id)
+        tracker.finish(run_id, result.success, result.response or "")
 
         await self._complete_execution(batch_id, result, agent_name)
         return result

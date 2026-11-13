@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import SettingsModal, { useSettings } from '@/components/SettingsModal';
+import { ActiveAgents } from '@/components/chat/ActiveAgents';
 import { ChatHeader } from '@/components/chat/ChatHeader';
 import { ChatInput } from '@/components/chat/ChatInput';
 import { ChatMessages } from '@/components/chat/ChatMessages';
@@ -239,6 +240,8 @@ export default function Page() {
             scrollContainerRef={scrollContainerRef}
             onScroll={handleScroll}
           />
+
+          <ActiveAgents />
 
           <div className="border-t border-gray-200 p-3">
             {error && <ErrorBanner message={error} onDismiss={clearError} />}

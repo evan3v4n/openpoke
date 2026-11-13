@@ -1,5 +1,6 @@
 """Execution agent support services."""
 
+from .activity import ActivityTracker, current_run, get_activity_tracker
 from .log_store import ExecutionAgentLogStore, get_execution_agent_logs
 from .retriever import (
     AgentRetriever,
@@ -12,6 +13,9 @@ from .retriever import (
 from .roster import AgentRoster, get_agent_roster
 
 __all__ = [
+    "ActivityTracker",
+    "current_run",
+    "get_activity_tracker",
     "AgentRetriever",
     "AgentRoster",
     "Candidate",
