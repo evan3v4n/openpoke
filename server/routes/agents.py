@@ -4,6 +4,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from ..services.triggers import get_trigger_service
 from ..services.execution import get_activity_tracker, get_agent_retriever, get_agent_roster
 
 
@@ -50,6 +51,28 @@ def list_agents() -> Dict[str, Any]:
 # Running execution agents (and just-finished ones) with their live event feed
 def active_agents() -> Dict[str, Any]:
     return {"runs": get_activity_tracker().snapshot()}
+
+
+@router.get("/pending")
+# Open loops: unsent drafts and active reminders, each with the agent that owns it
+def pending_items() -> Dict[str, Any]:
+    drafts = [
+        {"agent_name": name, **draft}
+        for name, items in get_agent_roster().open_drafts().items()
+        for draft in items
+    ]
+    reminders = [
+        {
+            "id": t.id,
+            "agent_name": t.agent_name,
+            "payload": t.payload[:300],
+            "next_trigger": t.next_trigger,
+            "recurrence_rule": t.recurrence_rule,
+            "timezone": t.timezone,
+        }
+        for t in get_trigger_service().list_active()
+    ]
+    return {"drafts": drafts, "reminders": reminders}
 
 
 @router.get("/search")

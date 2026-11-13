@@ -101,6 +101,14 @@ class TriggerStore:
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
+    def list_active(self) -> List[TriggerRecord]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM triggers WHERE status = 'active'"
+                " ORDER BY next_trigger IS NULL, next_trigger"
+            ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
     def active_counts(self) -> Dict[str, int]:
         with self._lock, self._connect() as conn:
             rows = conn.execute(

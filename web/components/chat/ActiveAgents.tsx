@@ -48,14 +48,25 @@ function useActiveRuns(): AgentRun[] {
 
 export function ActiveAgents() {
   const runs = useActiveRuns();
-  if (runs.length === 0) return null;
+  const runningCount = runs.filter(run => run.status === 'running').length;
 
   return (
-    <div className="flex flex-col gap-2 border-t border-gray-200 bg-gray-50 p-3">
-      {runs.map(run => (
-        <RunCard key={run.run_id} run={run} />
-      ))}
-    </div>
+    <aside className="card flex max-h-[60vh] flex-col overflow-hidden">
+      <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+        <h2 className="text-sm font-semibold text-gray-800">Running agents</h2>
+        <span className="chip">{runningCount} active</span>
+      </div>
+
+      <div className="flex flex-col gap-2 overflow-y-auto p-3">
+        {runs.length === 0 ? (
+          <p className="px-1 py-6 text-center text-sm text-gray-500">
+            No agents running. When one starts working, its progress shows up here.
+          </p>
+        ) : (
+          runs.map(run => <RunCard key={run.run_id} run={run} />)
+        )}
+      </div>
+    </aside>
   );
 }
 
@@ -91,7 +102,7 @@ function RunCard({ run }: { run: AgentRun }) {
       </button>
 
       {expanded && (
-        <div ref={logRef} className="max-h-40 overflow-y-auto border-t border-gray-100 px-3 py-2 font-mono text-xs">
+        <div ref={logRef} className="max-h-64 overflow-y-auto border-t border-gray-100 px-3 py-2 font-mono text-xs">
           {run.events.map(event => (
             <div
               key={event.seq}
