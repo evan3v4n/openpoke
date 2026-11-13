@@ -34,6 +34,7 @@ W_LOOP = 0.35
 W_RECENCY = 0.25
 W_RECENT_USE = 0.5
 MIN_SCORE = 0.2
+MIN_TYPO_LEN = 5  # shorter words are too easy to "correct" into a different word or name
 
 # Agents the interaction agent dispatched work to in the last few turns, newest first.
 # This is what "check again" or "any update?" refers to, so it outranks raw recency.
@@ -83,6 +84,39 @@ def tokenize(text: str) -> List[str]:
 
 def _stem(token: str) -> str:
     return token[:-1] if len(token) > 3 and token.endswith("s") else token
+
+
+def _one_edit_apart(a: str, b: str) -> bool:
+    """True when `a` and `b` differ by one insertion, deletion, substitution or adjacent swap."""
+
+    if a == b or abs(len(a) - len(b)) > 1:
+        return False
+    i = 0
+    while i < min(len(a), len(b)) and a[i] == b[i]:
+        i += 1
+    if len(a) == len(b):
+        return a[i + 1 :] == b[i + 1 :] or (a[i : i + 2] == b[i : i + 2][::-1] and a[i + 2 :] == b[i + 2 :])
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    return short[i:] == long_[i + 1 :]
+
+
+def _spelling_corrections(tokens: Sequence[str], vocab: Set[str]) -> List[str]:
+    """Roster words one typo away from query words that match nothing on the roster.
+
+    Only words of 5+ letters that share their first letter are considered (cheap, and avoids
+    turning short words into other names). At most two corrections per word, nearest-looking first.
+    """
+
+    if not tokens:
+        return []
+    stems = {_stem(v) for v in vocab}
+    found: List[str] = []
+    for token in tokens:
+        if len(token) < MIN_TYPO_LEN or token in vocab or _stem(token) in stems:
+            continue
+        near = sorted(v for v in vocab if v[0] == token[0] and _one_edit_apart(token, v))
+        found.extend(near[:2])
+    return list(dict.fromkeys(found))
 
 
 def _age_days(iso: str) -> float:
@@ -208,9 +242,14 @@ class AgentRetriever:
         by_name = {row["name"]: row for row in rows}
         query_tokens = tokenize(message)
         query_emails = {e.lower() for e in EMAIL_RE.findall(message or "")}
-        query_token_set = set(query_tokens)
 
         people_rows = self._roster.people_rows()
+        # A misspelled name or topic word ("Sarha", "reveiw") matches nothing; add the roster words
+        # it is one typo away from so the exact-match scoring below still finds the right agent.
+        vocab = self._vocabulary(rows, people_rows)
+        corrections = _spelling_corrections(query_tokens, vocab)
+        query_tokens = query_tokens + [c for c in corrections if c not in query_tokens]
+        query_token_set = set(query_tokens)
         drafts = self._roster.open_drafts()
         triggers = self._trigger_counts()
 
@@ -218,7 +257,10 @@ class AgentRetriever:
 
         scored: Dict[str, Candidate] = {}
         entity_scores, entity_reasons, entity_emails = self._entity_scores(
-            people_rows, query_emails, query_token_set, set(_TOKEN_RE.findall((message or "").lower()))
+            people_rows,
+            query_emails,
+            query_token_set,
+            set(_TOKEN_RE.findall((message or "").lower())) | set(corrections),
         )
         keyword_scores = self._keyword_scores(rows, people_rows, query_tokens)
         explicit = bool(entity_scores) or max(keyword_scores.values(), default=0.0) >= STRONG_KEYWORD_SCORE
@@ -347,6 +389,18 @@ class AgentRetriever:
         return weights
 
     @staticmethod
+    def _vocabulary(rows: List[Dict[str, Any]], people_rows: Iterable) -> Set[str]:
+        """Every word a query could legitimately match: agent names, subjects, summaries, people."""
+
+        vocab: Set[str] = set()
+        for row in rows:
+            vocab.update(tokenize(f"{row['name']} {' '.join(row['subjects'])} {row['summary']}"))
+        for _, email, display in people_rows:
+            vocab.update(tokenize(display))
+            vocab.update(tokenize(email.split("@", 1)[0].replace(".", " ").replace("_", " ")))
+        return vocab
+
+    @staticmethod
     def _entity_scores(
         people_rows: Iterable,
         query_emails: Set[str],
@@ -411,11 +465,15 @@ class AgentRetriever:
         query = list(dict.fromkeys(_stem(t) for t in query_tokens))
         total = len(rows)
         idf: Dict[str, float] = {}
+        df_by_token: Dict[str, int] = {}
         for token in query:
             df = sum(1 for f in fields.values() if any(token in toks for toks in f.values()))
+            df_by_token[token] = df
             idf[token] = math.log(1.0 + total / (1.0 + df))
         max_weight = max(FIELD_WEIGHTS.values())
-        denominator = sum(idf[t] * max_weight for t in query) or 1.0
+        # Words that appear nowhere on the roster ("any", "update", "thing") say nothing about
+        # which agent is meant, so they must not dilute a real match below MIN_SCORE.
+        denominator = sum(idf[t] * max_weight for t in query if df_by_token[t] > 0) or 1.0
 
         scores: Dict[str, float] = {}
         for name, per_field in fields.items():

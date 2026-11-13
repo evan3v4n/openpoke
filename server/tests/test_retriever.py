@@ -312,3 +312,37 @@ class RealisticRosterAccuracy(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TypoAndFillerTolerance(unittest.TestCase):
+    def setUp(self) -> None:
+        self.roster, _ = make_roster()
+        self.retriever = AgentRetriever(self.roster, trigger_counts=lambda: {})
+        self.roster.touch("Email to Alice", "Asked Alice Chen about the quarterly review")
+        self.roster.record_activity(
+            "Email to Alice",
+            [PersonRef(email="alice@piedpiper.com", name="Alice Chen", role="recipient")],
+            [],
+            ["Quarterly Review"],
+        )
+        self.roster.touch("Q3 Budget", "Analyse Q3 budget spreadsheet")
+
+    def top(self, message: str) -> str:
+        return self.retriever.candidates(message, recent_pad=0)[0].name
+
+    def test_filler_words_do_not_hide_a_topic_match(self) -> None:
+        self.assertEqual(self.top("any update on the quarterly review thing?"), "Email to Alice")
+
+    def test_misspelled_topic_and_name_still_match(self) -> None:
+        self.assertEqual(self.top("status of the quarterly reveiw"), "Email to Alice")
+        self.assertEqual(self.top("did alcie chen reply?").lower(), "email to alice")
+        self.assertEqual(self.top("did alice chne reply?"), "Email to Alice")
+
+    def test_unrelated_words_are_not_corrected_into_matches(self) -> None:
+        self.assertEqual(self.retriever.candidates("book a restaurant for friday", recent_pad=0), [])
+
+    def test_short_words_are_not_corrected(self) -> None:
+        from server.services.execution.retriever import _spelling_corrections
+
+        self.assertEqual(_spelling_corrections(["alcie"], {"alice"}), ["alice"])
+        self.assertEqual(_spelling_corrections(["alic"], {"alice"}), [])
