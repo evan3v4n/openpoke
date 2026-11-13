@@ -12,6 +12,7 @@ from ...services.execution import (
     get_agent_retriever,
     get_agent_roster,
 )
+from ...services.execution.ambiguity import assess_user_message
 from ...services.execution.retriever import humanize_age, reporting_agents
 
 MAX_WHY_CHARS = 240  # cap on the reasons shown per agent
@@ -40,6 +41,10 @@ def prepare_message_with_history(
     sections.append(
         f"<active_agents>\n{_render_active_agents(latest_text, message_type)}\n</active_agents>"
     )
+    if message_type == "user":
+        unclear = _assess_user_turn(latest_text, transcript)
+        if unclear:
+            sections.append(f"<ambiguities>\n{unclear}\n</ambiguities>")
     connections = _render_connections()
     if connections:
         sections.append(f"<connections>\n{connections}\n</connections>")
@@ -55,6 +60,37 @@ def _render_conversation_history(transcript: str) -> str:
     if not history:
         history = "None"
     return f"<conversation_history>\n{history}\n</conversation_history>"
+
+
+# Find what this user message leaves unclear (which draft, which date, which mailbox) and record
+# which drafts it clearly allows to be sent; the execution runtime refuses any other send.
+def _assess_user_turn(latest_text: str, transcript: str) -> str:
+    from datetime import date
+
+    from ...services.gmail import get_active_gmail_email, is_gmail_connected  # lazy: import cycle
+
+    roster = get_agent_roster()
+    try:
+        assessment = assess_user_message(
+            latest_text,
+            roster,
+            today=date.today(),
+            gmail_connected=is_gmail_connected(),
+            account_email=get_active_gmail_email(),
+            transcript=transcript,
+        )
+        roster.set_send_authorizations(assessment.grants)
+    except Exception as exc:  # fail closed: with no grants recorded, nothing can be sent this turn
+        logger.error("ambiguity check failed", extra={"error": str(exc)})
+        try:
+            roster.set_send_authorizations([])
+        except Exception:  # pragma: no cover - defensive
+            pass
+        return ""
+
+    return "\n".join(
+        f'<ambiguity kind="{item.kind}">{escape(item.detail)}</ambiguity>' for item in assessment.ambiguities
+    )
 
 
 # Report unavailable services so the interaction agent does not dispatch work that cannot run
@@ -105,8 +141,8 @@ def _render_active_agents(latest_text: str, message_type: str) -> str:
             attrs += f' why="{escape(why, quote=True)}"'
         rendered.append(f"<agent {attrs}>{escape(candidate.summary)}</agent>")
 
-    # Several agents match a user request equally (e.g. ten Judys): list all of them so the model
-    # asks which one is meant instead of fanning work out to every one.
+    # Several agents match a user request equally (ten Judys, or a Q3 and a Q4 budget for "the
+    # budget"): list all of them so the model asks which is meant instead of fanning work out.
     if message_type != "agent" and shortlist.tied_names:
         shown = shortlist.tied_names[:MAX_TIED_NAMES]
         names = "; ".join(escape(name, quote=True) for name in shown)
@@ -114,7 +150,8 @@ def _render_active_agents(latest_text: str, message_type: str) -> str:
         if extra > 0:
             names += f"; and {extra} more"
         rendered.append(
-            f'<ambiguity count="{len(shortlist.tied_names)}">{len(shortlist.tied_names)} agents match this '
+            f'<ambiguity kind="{shortlist.tie_kind or "person"}" count="{len(shortlist.tied_names)}">'
+            f"{len(shortlist.tied_names)} agents match this "
             f"message about equally: {names}. If the user did not say which one, or all of them, "
             "ask them which one they mean before sending work.</ambiguity>"
         )

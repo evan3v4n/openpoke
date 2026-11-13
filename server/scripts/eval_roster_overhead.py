@@ -251,7 +251,8 @@ def run_size(n: int, seed: int, queries_per_kind: int) -> Dict[str, Any]:
                 elif kind.startswith("typo_"):
                     record(kind, recall=bool(targets & set(shown)), top1=bool(shown and shown[0] in targets))
                 elif kind.startswith("hard_"):
-                    record(kind, recall=bool(targets & set(shown)), targets=len(targets))
+                    record(kind, recall=bool(targets & set(shown)), targets=len(targets),
+                           flagged=len(targets) > 1 and "<ambiguity" in section, multi=len(targets) > 1)
                 elif kind == "first_name":
                     tied = len(targets) > 1
                     record(
@@ -261,7 +262,9 @@ def run_size(n: int, seed: int, queries_per_kind: int) -> Dict[str, Any]:
                         ambiguity_flagged=tied and "<ambiguity" in section,
                     )
                 else:
-                    record(kind, recall=bool(targets & set(shown)), top1=bool(shown and shown[0] in targets))
+                    # One right answer: an <ambiguity> note here would make the model ask needlessly.
+                    record(kind, recall=bool(targets & set(shown)), top1=bool(shown and shown[0] in targets),
+                           overask="<ambiguity" in section)
 
             # Follow-ups with no content ("yes, send it"): target is the agent with the open draft.
             follow_up_ok = 0
@@ -290,6 +293,9 @@ def run_size(n: int, seed: int, queries_per_kind: int) -> Dict[str, Any]:
     unambiguous = ["full_name", "email", "topic", "topic_filler", "follow_up"]
     unamb_hits = sum(kinds.get(k, {}).get("recall", 0) for k in unambiguous)
     unamb_total = sum(kinds.get(k, {}).get("n", 0) for k in unambiguous)
+    overask_hits = sum(kinds.get(k, {}).get("overask", 0) for k in ("full_name", "email", "topic", "topic_filler"))
+    overask_total = sum(kinds.get(k, {}).get("n", 0) for k in ("full_name", "email", "topic", "topic_filler"))
+    topic_tie = kinds.get("hard_ambiguous_topic", {})
     mean_new = statistics.mean(new_tokens) if new_tokens else 0.0
     lat = sorted(latencies)
     return {
@@ -305,6 +311,9 @@ def run_size(n: int, seed: int, queries_per_kind: int) -> Dict[str, Any]:
         "top1_by_kind": {k: rate(k, "top1") for k in ("full_name", "email", "topic", "topic_filler")},
         "ambiguity_flag_rate": round(ambiguity_flagged / ambiguity_expected, 4) if ambiguity_expected else None,
         "ambiguity_cases": ambiguity_expected,
+        # Asking when there is one right answer (should be ~0) vs. flagging a shared topic (should be high).
+        "overask_rate": round(overask_hits / overask_total, 4) if overask_total else None,
+        "topic_tie_flag_rate": round(topic_tie["flagged"] / topic_tie["multi"], 4) if topic_tie.get("multi") else None,
         "new_task_clean_rate": rate("new_task", "clean"),
         "typo": {
             k: {"recall": rate(k, "recall"), "top1": rate(k, "top1")}
@@ -344,6 +353,10 @@ def print_report(results: List[Dict[str, Any]], method: str) -> None:
         )
     print("\n* recall over full-name, email, topic, topic+filler and follow-up queries: the target is in the shortlist.")
     print("  amb = share of shared-first-name queries reported as a tie; newtask = no false person/keyword match.")
+    print("\nAsking: over-ask = <ambiguity> on a query with one right answer (lower is better);")
+    print("        topic tie = <ambiguity> on a topic shared by several agents (higher is better).")
+    for r in results:
+        print(f"  {r['agents']:>5} agents  over-ask: {fmt(r['overask_rate'], True).strip()}   topic tie: {fmt(r['topic_tie_flag_rate'], True).strip()}")
     print("\nHard cases (not gated): any valid target shown / mean number of valid targets.")
     for r in results:
         h = r["hard"]
@@ -362,7 +375,9 @@ def print_report(results: List[Dict[str, Any]], method: str) -> None:
 GATES: Dict[str, Callable[[Dict[str, Any]], bool]] = {}
 
 
-def check(results: List[Dict[str, Any]], min_recall: float, min_ambiguity: float, min_clean: float) -> List[str]:
+def check(
+    results: List[Dict[str, Any]], min_recall: float, min_ambiguity: float, min_clean: float, max_overask: float = 0.05
+) -> List[str]:
     failures: List[str] = []
     for r in results:
         n = r["agents"]
@@ -372,6 +387,8 @@ def check(results: List[Dict[str, Any]], min_recall: float, min_ambiguity: float
             failures.append(f"{n} agents: ambiguity flag rate {r['ambiguity_flag_rate']:.3f} < {min_ambiguity}")
         if r["new_task_clean_rate"] is not None and r["new_task_clean_rate"] < min_clean:
             failures.append(f"{n} agents: new-task clean rate {r['new_task_clean_rate']:.3f} < {min_clean}")
+        if r["overask_rate"] is not None and r["overask_rate"] > max_overask:
+            failures.append(f"{n} agents: over-ask rate {r['overask_rate']:.3f} > {max_overask}")
     return failures
 
 
@@ -385,6 +402,7 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--min-recall", type=float, default=0.95)
     ap.add_argument("--min-ambiguity", type=float, default=0.9)
     ap.add_argument("--min-clean", type=float, default=0.75)
+    ap.add_argument("--max-overask", type=float, default=0.05)
     args = ap.parse_args(argv)
 
     sizes = [int(s) for s in args.sizes.split(",") if s.strip()]
@@ -398,7 +416,7 @@ def main(argv: List[str] | None = None) -> int:
         print(f"\nwrote {args.json}")
 
     if args.check:
-        failures = check(results, args.min_recall, args.min_ambiguity, args.min_clean)
+        failures = check(results, args.min_recall, args.min_ambiguity, args.min_clean, args.max_overask)
         for f in failures:
             print(f"GATE FAILED: {f}")
         return 1 if failures else 0

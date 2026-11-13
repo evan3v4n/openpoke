@@ -68,6 +68,12 @@ CREATE TABLE IF NOT EXISTS agent_drafts (
     closed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_drafts_open ON agent_drafts (closed_at, agent_name);
+CREATE TABLE IF NOT EXISTS send_authorizations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_name TEXT NOT NULL,
+    draft_row_id INTEGER,
+    granted_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS retrieval_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,
@@ -370,6 +376,7 @@ class AgentRoster:
                 "agent_people",
                 "agent_threads",
                 "agent_drafts",
+                "send_authorizations",
                 "retrieval_log",
                 "retrieval_choices",
             ):
@@ -470,6 +477,76 @@ class AgentRoster:
             )
         return drafts
 
+    def open_draft_rows(self, max_age_days: float = 7.0) -> List[Dict[str, Any]]:
+        """Every unsent draft with its row id, oldest first (for working out which one a message means)."""
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat(timespec="seconds")
+        with self._tx() as conn:
+            rows = conn.execute(
+                "SELECT id, agent_name, draft_id, recipient, subject, created_at FROM agent_drafts"
+                " WHERE closed_at IS NULL AND created_at >= ? ORDER BY id",
+                (cutoff,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def last_closed_draft(self, agent_name: str) -> Optional[Dict[str, Any]]:
+        """The agent's most recently sent or deleted draft, if any."""
+
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT id, agent_name, draft_id, recipient, subject, closed_at FROM agent_drafts"
+                " WHERE agent_name = ? AND closed_at IS NOT NULL ORDER BY closed_at DESC, id DESC LIMIT 1",
+                (agent_name,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    # ------------------------------------------------------------ send authorizations
+
+    def set_send_authorizations(self, grants: Iterable[Tuple[str, Optional[int]]]) -> None:
+        """Replace what the user's latest message allows to be sent.
+
+        Each grant is (agent_name, draft_row_id). A None row id lets that agent send a draft
+        this roster does not track (one that existed before OpenPoke saw it).
+        """
+
+        now = _now()
+        with self._tx() as conn:
+            conn.execute("DELETE FROM send_authorizations")
+            for agent_name, row_id in grants:
+                conn.execute(
+                    "INSERT INTO send_authorizations (agent_name, draft_row_id, granted_at) VALUES (?, ?, ?)",
+                    (agent_name, row_id, now),
+                )
+
+    def send_authorizations(self, max_age_minutes: float = 30.0) -> List[Tuple[str, Optional[int]]]:
+        """Current grants, ignoring ones older than `max_age_minutes`."""
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)).isoformat(timespec="seconds")
+        with self._tx() as conn:
+            rows = conn.execute(
+                "SELECT agent_name, draft_row_id FROM send_authorizations WHERE granted_at >= ?", (cutoff,)
+            ).fetchall()
+        return [(row["agent_name"], row["draft_row_id"]) for row in rows]
+
+    def tracked_draft(self, agent_name: str, draft_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """The open draft row a send refers to: by Gmail draft id, else the agent's only id-less draft."""
+
+        with self._tx() as conn:
+            if draft_id:
+                row = conn.execute(
+                    "SELECT id, agent_name, draft_id, recipient, subject FROM agent_drafts"
+                    " WHERE draft_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
+                    (draft_id,),
+                ).fetchone()
+                if row is not None:
+                    return dict(row)
+            rows = conn.execute(
+                "SELECT id, agent_name, draft_id, recipient, subject FROM agent_drafts"
+                " WHERE agent_name = ? AND draft_id IS NULL AND closed_at IS NULL",
+                (agent_name,),
+            ).fetchall()
+        return dict(rows[0]) if len(rows) == 1 else None
+
     def get_entry(self, agent_name: str) -> Optional[Dict[str, Any]]:
         """Full entry for one agent, or None."""
 
@@ -567,6 +644,24 @@ class AgentRoster:
                 " SELECT MAX(id) FROM retrieval_choices GROUP BY agent_name)"
                 " ORDER BY id DESC LIMIT ?",
                 (limit,),
+            ).fetchall()
+        return [(row["agent_name"], row["ts"]) for row in rows]
+
+    def last_turn_choices(self) -> List[Tuple[str, str]]:
+        """(agent_name, timestamp) for every agent dispatched to in the most recent turn that dispatched."""
+
+        with self._tx() as conn:
+            latest = conn.execute(
+                "SELECT retrieval_id, agent_name, ts FROM retrieval_choices ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if latest is None:
+                return []
+            if latest["retrieval_id"] is None:
+                return [(latest["agent_name"], latest["ts"])]
+            rows = conn.execute(
+                "SELECT agent_name, MAX(ts) AS ts FROM retrieval_choices WHERE retrieval_id = ?"
+                " GROUP BY agent_name ORDER BY MAX(id) DESC",
+                (latest["retrieval_id"],),
             ).fetchall()
         return [(row["agent_name"], row["ts"]) for row in rows]
 

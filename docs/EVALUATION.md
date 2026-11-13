@@ -25,7 +25,7 @@ numbers repeat exactly; latency varies by machine. Tokens are estimated as chara
 | 35 | 355 | 192 | 46% | 4.4 ms |
 | 100 | 1,024 | 252 | 75% | 6.0 ms |
 | 250 | 2,592 | 315 | 88% | 9.6 ms |
-| 1,000 | 10,431 | 349 | **96.7%** | 28.5 ms |
+| 1,000 | 10,431 | 367 | **96.5%** | 32 ms |
 
 The old section grows linearly with the roster; the new one grows slowly. **Break-even is about 20
 agents**: below that the new section is larger (summaries and reasons cost more than bare names).
@@ -61,7 +61,52 @@ behaviour is to ask.
 
 Unit tests for both are in `server/tests/test_retriever.py`.
 
-## 4. What this does not show (read before relying on the numbers)
+## 4. Asking instead of guessing
+
+A live test sent the wrong email. Two drafts were open; the user confirmed the lunch draft, and
+then said "send it" again. The assistant sent the *other* draft to a different person, even though
+the conversation had moved on from it. The open-draft boost in the retriever made the agent holding
+an unsent draft the default target for a contentless "send it", and the `<ambiguity>` note only
+covered people.
+
+The rule now: when a message can be read more than one way and the readings lead to different
+outcomes, the assistant asks. Code detects the cases it can see and adds `<ambiguity kind="…">`:
+
+| Kind | Example | What happens |
+|---|---|---|
+| `person` | "Did Judy reply?" with three Judys | Ask which Judy (unchanged) |
+| `topic` | "How's the budget?" with Q3 and Q4 budget agents | Ask which (new) |
+| `draft` | "send it" after the discussed draft already went out | Ask which draft; the send is also blocked in code |
+| `date` | "this Friday" said on a Friday, "next Tuesday" | Ask before anything date-dependent; a draft may state its assumed date |
+| `account` | Gmail connected but its address unknown | Sending is blocked until the address is confirmed |
+
+**Sends are blocked in code, not only in the prompt.** Each user message records which drafts it
+clearly refers to: one named by recipient or subject ("send the lunch one"), the draft the assistant
+showed in its last reply (for "yes"/"send it"), or all of them for "send both". The execution runtime
+refuses `gmail_execute_draft` for any other draft, and refuses every send when the sending address is
+unknown. A refusal stops the run and goes back to the interaction agent, which asks. A model that
+ignores the note still cannot send the wrong draft.
+
+Changes in retrieval this needed: two-character tokens with a digit ("q3") are kept, so "the Q3
+numbers" no longer matches nothing, and topic ties compare *which* words of the message an agent
+matches, not the field they are in.
+
+**Measured.** The replay of the live conversation is a test (`test_ambiguity.py`, and through the
+real interaction loop in `test_workflow_e2e.py`): the second "send it" now produces a draft
+ambiguity, and that draft cannot be sent. The offline eval adds the asking trade-off:
+
+| | 5 to 1,000 agents |
+|---|---|
+| Over-ask: `<ambiguity>` on a query with one right answer (full name, email, topic) | 0% (gated at ≤5%) |
+| Topic tie flagged when several agents share the topic | 100% |
+
+Cost: the shortlist section grows about 5% (349 to 367 tokens at 1,000 agents) from topic-tie
+notes. Not measured: how often a live model asks when the note is present, and which drafts real
+users mean by phrasings this matcher does not recognise. When unsure it refuses the send, so the
+failure mode is an extra question, not a wrong email. Direct sends that skip drafts (reply,
+forward) are checked for the sending account but not matched to the user's message.
+
+## 5. What this does not show (read before relying on the numbers)
 
 - **Synthetic data.** Names and topics are unique and the queries are templated from the seeded
   strings, so the quality figures are best case, not a prediction of production accuracy. The two

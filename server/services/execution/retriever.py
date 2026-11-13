@@ -74,12 +74,18 @@ _STOPWORDS = frozenset(
 )
 
 
-def tokenize(text: str) -> List[str]:
-    """Lowercase alphanumeric tokens of length >= 3, minus stopwords."""
+def _keep_token(token: str) -> bool:
+    # Two-character tokens are noise ("is", "to") unless they mix a letter and a digit:
+    # "q3" vs "q4" is the whole difference between two budget agents.
+    if len(token) == 2:
+        return any(c.isdigit() for c in token) and any(c.isalpha() for c in token)
+    return len(token) >= 3 and token not in _STOPWORDS
 
-    return [
-        t for t in _TOKEN_RE.findall((text or "").lower()) if len(t) >= 3 and t not in _STOPWORDS
-    ]
+
+def tokenize(text: str) -> List[str]:
+    """Lowercase alphanumeric tokens of length >= 3 (or letter+digit pairs like "q3"), minus stopwords."""
+
+    return [t for t in _TOKEN_RE.findall((text or "").lower()) if _keep_token(t)]
 
 
 def _stem(token: str) -> str:
@@ -152,6 +158,8 @@ class Candidate:
     active_triggers: int = 0
     content_score: float = 0.0  # entity + keyword part of the score only (no context signals)
     matched_people: frozenset = frozenset()  # emails of people from the message this agent knows
+    matched_terms: frozenset = frozenset()  # the message's (stemmed) words found in this agent's fields
+    keyword_score: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -173,6 +181,8 @@ class Shortlist:
     matching_total: int = 0  # agents with any real signal for this message
     # Every agent that matches the message about equally (2 or more), empty when one clearly wins.
     tied_names: List[str] = field(default_factory=list)
+    # What the tie is about: "person" (ten Judys) or "topic" (Q3 and Q4 budget for "the budget").
+    tie_kind: str = ""
 
 
 @dataclass
@@ -262,7 +272,7 @@ class AgentRetriever:
             query_token_set,
             set(_TOKEN_RE.findall((message or "").lower())) | set(corrections),
         )
-        keyword_scores = self._keyword_scores(rows, people_rows, query_tokens)
+        keyword_scores, keyword_terms = self._keyword_scores(rows, people_rows, query_tokens)
         explicit = bool(entity_scores) or max(keyword_scores.values(), default=0.0) >= STRONG_KEYWORD_SCORE
         context_scale = CONTEXT_SCALE_WITH_CONTENT if explicit else 1.0
         # An open draft breaks ties between agents for the same person, but must not outrank an
@@ -309,10 +319,17 @@ class AgentRetriever:
                     active_triggers=trigger_count,
                     content_score=W_ENTITY * entity + W_KEYWORD * keyword,
                     matched_people=entity_emails.get(name, frozenset()),
+                    matched_terms=keyword_terms.get(name, frozenset()),
+                    keyword_score=keyword,
                 )
 
         all_ranked = sorted(scored.values(), key=lambda c: c.score, reverse=True)
-        tied_names = self._tied_people_matches(all_ranked)
+        tie_kind, tied_names = "", self._tied_people_matches(all_ranked)
+        if tied_names:
+            tie_kind = "person"
+        elif not entity_scores:
+            tied_names = self._tied_topic_matches(all_ranked)
+            tie_kind = "topic" if tied_names else ""
 
         ranked = all_ranked[:limit]
         chosen = {c.name for c in ranked}
@@ -347,7 +364,9 @@ class AgentRetriever:
                     chosen.add(row["name"])
                     recent_pad -= 1
 
-        return Shortlist(candidates=ranked, matching_total=len(all_ranked), tied_names=tied_names)
+        return Shortlist(
+            candidates=ranked, matching_total=len(all_ranked), tied_names=tied_names, tie_kind=tie_kind
+        )
 
     @staticmethod
     def _tied_people_matches(ranked: List[Candidate]) -> List[str]:
@@ -366,6 +385,29 @@ class AgentRetriever:
         if len(tied) < 2 or frozenset.intersection(*(c.matched_people for c in tied)):
             return []
         return sorted(c.name for c in tied)
+
+    @staticmethod
+    def _tied_topic_matches(ranked: List[Candidate]) -> List[str]:
+        """Agents that match the message's words equally well when no person is named.
+
+        "How's the budget?" with a Q3 and a Q4 budget agent does not say which one. Agents tie
+        when they match the same words of the message, whichever field the words are in (an
+        agent named after the topic is not more "meant" than one whose emails are about it).
+        Only a clear match counts, and a passing mention (well under the best score) does not.
+        Recent use and open drafts are ignored here so they cannot hide the tie.
+        """
+
+        matched = [c for c in ranked if c.matched_terms]
+        if len(matched) < 2:
+            return []
+        best = max(matched, key=lambda c: (len(c.matched_terms), c.keyword_score))
+        if best.keyword_score < STRONG_KEYWORD_SCORE:
+            return []
+        tied = [
+            c for c in matched
+            if c.matched_terms >= best.matched_terms and c.keyword_score >= 0.5 * best.keyword_score
+        ]
+        return sorted(c.name for c in tied) if len(tied) >= 2 else []
 
     def search(self, query: str, limit: int = 8) -> Shortlist:
         """Explicit lookup (find_agents tool and HTTP route): signal-bearing matches only, no padding."""
@@ -442,11 +484,12 @@ class AgentRetriever:
     @staticmethod
     def _keyword_scores(
         rows: List[Dict[str, Any]], people_rows: Iterable, query_tokens: List[str]
-    ) -> Dict[str, float]:
-        """Fraction of the query's (idf-weighted) vocabulary found in each agent's fields."""
+    ) -> tuple[Dict[str, float], Dict[str, frozenset]]:
+        """Fraction of the query's (idf-weighted) vocabulary found in each agent's fields,
+        and which query words each agent matched."""
 
         if not query_tokens:
-            return {}
+            return {}, {}
 
         people_text: Dict[str, List[str]] = {}
         for agent, email, display in people_rows:
@@ -476,17 +519,22 @@ class AgentRetriever:
         denominator = sum(idf[t] * max_weight for t in query if df_by_token[t] > 0) or 1.0
 
         scores: Dict[str, float] = {}
+        terms: Dict[str, frozenset] = {}
         for name, per_field in fields.items():
             mass = 0.0
+            hit: Set[str] = set()
             for token in query:
                 best = max(
                     (FIELD_WEIGHTS[fname] for fname, toks in per_field.items() if token in toks),
                     default=0.0,
                 )
                 mass += idf[token] * best
+                if best:
+                    hit.add(token)
             if mass > 0:
                 scores[name] = mass / denominator
-        return scores
+                terms[name] = frozenset(hit)
+        return scores, terms
 
 
 _retriever: Optional[AgentRetriever] = None

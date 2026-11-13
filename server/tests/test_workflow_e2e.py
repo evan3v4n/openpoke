@@ -45,6 +45,7 @@ class Workflow(unittest.IsolatedAsyncioTestCase):
         )
         log = mock.Mock()
         log.load_transcript.return_value = ""
+        self.log = log
 
         async def fake_llm(**kwargs):
             messages = kwargs["messages"]
@@ -189,6 +190,57 @@ class Workflow(unittest.IsolatedAsyncioTestCase):
         name = self.dispatched[0][0]
         people = set(self.roster.get_entry(name)["people"])
         self.assertNotIn("me@me.com", people)
+
+    async def test_replay_second_send_it_asks_instead_of_sending_the_other_draft(self) -> None:
+        """A real conversation: two drafts, the user confirms one, then says "send it" again."""
+
+        from server.services.execution.ambiguity import check_send
+
+        toronto, penguin = "evan.scott@torontomu.ca", "evanscottpenguin@gmail.com"
+
+        def dispatch(agent: str, task: str) -> list:
+            return [{"content": "", "tool_calls": [tool_call("send_message_to_agent", agent_name=agent, instructions=task)]}, {"content": "On it."}]
+
+        def assistant_said(text: str) -> None:
+            self.log.load_transcript.return_value = (
+                f'<user_message timestamp="t">earlier</user_message>\n<poke_reply timestamp="t">{text}</poke_reply>'
+            )
+
+        self.script = dispatch("Checking In", f"draft to {toronto} asking what's up")
+        await self.run_user(f"open a draft email to {toronto} asking whats up")
+        self.roster.open_draft("Checking In", "dA", toronto, "Checking in")
+
+        self.script = dispatch("Lunch Invite", f"draft to {penguin}: lunch Friday at 1:00")
+        await self.run_user(f"open another draft to {penguin} asking him to lunch this friday at 1:00")
+        self.roster.open_draft("Lunch Invite", "dB", penguin, "Lunch this Friday?")
+
+        assistant_said(f'Here\'s the lunch draft to {penguin}, subject "Lunch this Friday?". Send it as-is?')
+        self.script = dispatch("Lunch Invite", "send the lunch draft")
+        start = len(self.prompts)
+        await self.run_user("yeah that looks good send it")
+        self.assertNotIn('<ambiguity kind="draft"', self.prompts[start])
+        self.assertTrue(check_send(self.roster, "Lunch Invite", "dB"))
+        self.roster.close_draft("dB", "Lunch Invite")
+
+        assistant_said(f"Lunch note went to {penguin} for Friday, Nov 20 at 1:00 PM.")
+        self.script = [{"content": "The lunch note already went out. Send the other draft?"}]
+        sent_before = len(self.dispatched)
+        start = len(self.prompts)
+        await self.run_user("send it")
+        prompt = self.prompts[start]
+        self.assertIn('<ambiguity kind="draft">', prompt)
+        self.assertIn("already sent", prompt)
+        self.assertIn(toronto, prompt)
+        self.assertEqual(len(self.dispatched), sent_before)
+        # Even a model that ignored the note could not send it: nothing allows that draft.
+        self.assertFalse(check_send(self.roster, "Checking In", "dA"))
+
+    async def test_topic_tie_prompts_a_question(self) -> None:
+        self.roster.touch("Q4 Budget", "Collected Q4 budget numbers from finance.")
+        self.roster.set_summary("Q4 Budget", "Collected Q4 budget numbers from finance.")
+        self.script = [{"content": "Q3 or Q4?"}]
+        await self.run_user("how's the budget looking")
+        self.assertIn('<ambiguity kind="topic"', self.prompts[0])
 
     # ---------------------------------------------------------------- agent report turns
 

@@ -80,7 +80,7 @@ class AmbiguityPrompt(JudyRosterCase):
 
     def test_prompt_lists_every_tied_agent_and_says_to_ask(self) -> None:
         rendered = self._render("Did Judy reply?")
-        self.assertIn('<ambiguity count="10">', rendered)
+        self.assertIn('<ambiguity kind="person" count="10">', rendered)
         for last in self.LAST_NAMES:  # including the ones the shortlist itself had to drop
             self.assertIn(f"Email to Judy {last}", rendered)
         self.assertIn("ask them which one they mean", rendered)

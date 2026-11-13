@@ -9,8 +9,18 @@ from .agent import ExecutionAgent
 from .tools import get_tool_schemas, get_tool_registry
 from ...config import get_settings
 from ...services.execution import get_agent_roster
+from ...services.execution.ambiguity import (
+    SEND_ACCOUNT_UNKNOWN_ERROR,
+    SEND_NOT_CONFIRMED_ERROR,
+    check_send,
+)
 from ...services.execution.people import extract_from_tool_call, find_draft_id, tool_succeeded
-from ...services.gmail import GMAIL_NOT_CONNECTED_ERROR, get_active_gmail_email
+from ...services.gmail import (
+    GMAIL_NOT_CONNECTED_ERROR,
+    get_active_gmail_email,
+    is_gmail_connected,
+    resolve_active_gmail_email,
+)
 from ...openrouter_client import request_chat_completion
 from ...logging_config import logger
 
@@ -102,7 +112,13 @@ class ExecutionAgentRuntime:
                     tools_executed.append(tool_name)
                     logger.info(f"[{self.agent.name}] Executing tool: {tool_name}")
 
-                    success, result = await self._execute_tool(tool_name, tool_args)
+                    refusal, sender = self._check_send(tool_name, tool_args)
+                    if refusal:
+                        success, result = False, {"error": refusal}
+                    else:
+                        success, result = await self._execute_tool(tool_name, tool_args)
+                        if success and sender and isinstance(result, dict):
+                            result["sent_from"] = sender  # so the report can say which mailbox sent it
 
                     if success:
                         logger.info(f"[{self.agent.name}] Tool {tool_name} completed successfully")
@@ -183,11 +199,36 @@ class ExecutionAgentRuntime:
             )
 
     # Errors that no retry can fix; the run should stop rather than call the LLM again
-    @staticmethod
-    def _fatal_tool_error(result: Any) -> Optional[str]:
-        if isinstance(result, dict) and result.get("error") == GMAIL_NOT_CONNECTED_ERROR:
-            return GMAIL_NOT_CONNECTED_ERROR
+    FATAL_ERRORS = (GMAIL_NOT_CONNECTED_ERROR, SEND_NOT_CONFIRMED_ERROR, SEND_ACCOUNT_UNKNOWN_ERROR)
+
+    @classmethod
+    def _fatal_tool_error(cls, result: Any) -> Optional[str]:
+        if isinstance(result, dict) and result.get("error") in cls.FATAL_ERRORS:
+            return result["error"]
         return None
+
+    # Tools that put an email in someone else's inbox; none can be undone.
+    SEND_TOOLS = ("gmail_execute_draft", "gmail_reply_to_thread", "gmail_forward_email")
+
+    # Refuse a send the user's latest message did not clearly ask for, or from an unknown mailbox.
+    # Returns (refusal error or None, sending address when the send may go ahead).
+    def _check_send(self, tool_name: str, tool_args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        if tool_name not in self.SEND_TOOLS or not is_gmail_connected():
+            return None, None  # not a send, or the tool itself reports Gmail is not connected
+        try:
+            if tool_name == "gmail_execute_draft" and not check_send(
+                get_agent_roster(), self.agent.name, tool_args.get("draft_id")
+            ):
+                logger.warning(f"[{self.agent.name}] Refused to send draft {tool_args.get('draft_id')}: not confirmed")
+                return SEND_NOT_CONFIRMED_ERROR, None
+            sender = resolve_active_gmail_email()
+        except Exception as exc:  # a broken check must fail closed: no send
+            logger.error(f"[{self.agent.name}] Send check failed: {exc}")
+            return SEND_NOT_CONFIRMED_ERROR, None
+        if not sender:
+            logger.warning(f"[{self.agent.name}] Refused to send: connected Gmail address unknown")
+            return SEND_ACCOUNT_UNKNOWN_ERROR, None
+        return None, sender
 
     # Index what a tool call touched (people, threads, subjects, drafts) so the agent can be found later
     def _record_roster_activity(

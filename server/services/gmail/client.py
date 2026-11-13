@@ -58,6 +58,23 @@ def get_active_gmail_email() -> Optional[str]:
     return email.lower() if email else None
 
 
+def resolve_active_gmail_email() -> Optional[str]:
+    """Address of the connected account, fetching the Gmail profile once if it is not cached.
+
+    Used before sending, where an unknown sender is not acceptable. Network call on a cache miss.
+    """
+
+    cached = get_active_gmail_email()
+    if cached:
+        return cached
+    user_id = get_active_gmail_user_id()
+    if not user_id:
+        return None
+    profile = _fetch_profile_from_composio(user_id)
+    email = _extract_email(profile) if profile else None
+    return email.lower() if email else None
+
+
 def _gmail_import_client():
     from composio import Composio  # type: ignore
     return Composio
