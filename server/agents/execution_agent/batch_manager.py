@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from .runtime import ExecutionAgentRuntime, ExecutionResult
+from ...config import get_settings
 from ...logging_config import logger
 
 
@@ -37,8 +38,10 @@ class ExecutionBatchManager:
     """Run execution agents and deliver their combined outcome."""
 
     # Initialize batch manager with timeout and coordination state for execution agents
-    def __init__(self, timeout_seconds: int = 90) -> None:
-        self.timeout_seconds = timeout_seconds
+    def __init__(self, timeout_seconds: Optional[int] = None) -> None:
+        self.timeout_seconds = (
+            timeout_seconds if timeout_seconds is not None else get_settings().execution_timeout_seconds
+        )
         self._pending: Dict[str, PendingExecution] = {}
         self._batch_lock = asyncio.Lock()
         self._batch_state: Optional[_BatchState] = None

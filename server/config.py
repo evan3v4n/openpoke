@@ -50,6 +50,9 @@ class Settings(BaseModel):
     server_host: str = Field(default=os.getenv("OPENPOKE_HOST", "0.0.0.0"))
     server_port: int = Field(default=_env_int("OPENPOKE_PORT", 8001))
 
+    # Max seconds one execution agent may run per request (email searches can take several minutes)
+    execution_timeout_seconds: int = Field(default=_env_int("OPENPOKE_EXECUTION_TIMEOUT_SECONDS", 240))
+
     # LLM model selection
     interaction_agent_model: str = Field(default="anthropic/claude-sonnet-4")
     execution_agent_model: str = Field(default="anthropic/claude-sonnet-4")

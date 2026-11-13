@@ -99,5 +99,15 @@ class ExecutionRunGuards(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.summary(), "Nothing to do here.")
 
 
+class BatchManagerTimeout(unittest.TestCase):
+    def test_default_comes_from_settings_and_an_explicit_value_wins(self) -> None:
+        from server.agents.execution_agent import batch_manager
+
+        settings = types.SimpleNamespace(execution_timeout_seconds=7)
+        with mock.patch.object(batch_manager, "get_settings", return_value=settings):
+            self.assertEqual(batch_manager.ExecutionBatchManager().timeout_seconds, 7)
+            self.assertEqual(batch_manager.ExecutionBatchManager(timeout_seconds=3).timeout_seconds, 3)
+
+
 if __name__ == "__main__":
     unittest.main()
