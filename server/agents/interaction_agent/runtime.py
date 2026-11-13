@@ -89,7 +89,10 @@ class InteractionAgentRuntime:
             )
 
         except Exception as exc:
-            logger.error("Interaction agent failed", extra={"error": str(exc)})
+            logger.error(
+                f"Interaction agent failed: {type(exc).__name__}: {exc} (model={self.model})",
+                exc_info=True,
+            )
             return InteractionResult(
                 success=False,
                 response="",
@@ -124,7 +127,10 @@ class InteractionAgentRuntime:
             )
 
         except Exception as exc:
-            logger.error("Interaction agent (agent message) failed", extra={"error": str(exc)})
+            logger.error(
+                f"Interaction agent (agent message) failed: {type(exc).__name__}: {exc} (model={self.model})",
+                exc_info=True,
+            )
             return InteractionResult(
                 success=False,
                 response="",
@@ -208,15 +214,24 @@ class InteractionAgentRuntime:
 
         logger.debug(
             "Interaction agent calling LLM",
-            extra={"model": self.model, "tools": len(self.tool_schemas)},
+            extra={"model": self.model, "tools": len(self.tool_schemas), "messages": len(messages)},
         )
-        return await request_chat_completion(
-            model=self.model,
-            messages=messages,
-            system=system_prompt,
-            api_key=self.api_key,
-            tools=self.tool_schemas,
-        )
+        try:
+            response = await request_chat_completion(
+                model=self.model,
+                messages=messages,
+                system=system_prompt,
+                api_key=self.api_key,
+                tools=self.tool_schemas,
+            )
+        except Exception as exc:
+            logger.error(
+                f"Interaction agent LLM call failed: {type(exc).__name__}: {exc}",
+                extra={"model": self.model, "messages": len(messages)},
+            )
+            raise
+        logger.debug("Interaction agent LLM response", extra={"usage": response.get("usage")})
+        return response
 
     # Extract the assistant's message from the OpenRouter API response structure
     def _extract_assistant_message(self, response: Dict[str, Any]) -> Dict[str, Any]:
