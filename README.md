@@ -32,21 +32,80 @@ flowchart LR
 
 **1. Index.** The roster moved from `roster.json` (names only) to SQLite. For each agent it keeps a summary of its latest result, recent subjects, the people involved (email, name, role, count), Gmail thread ids and unsent drafts. It fills itself: every successful execution-agent tool call records the people, threads and subjects it touched. The user's own address is never indexed. Existing `roster.json` is imported once.
 
-**2. Rank.** Plain Python over the roster, about 30 ms at 1,000 agents:
+**2. Rank.** Every agent is scored against the message in plain Python ([`retriever.py`](server/services/execution/retriever.py), `retrieve`), about 30 ms at 1,000 agents:
 
 ```
-score = 1.0·entity + 0.6·keyword + 0.35·open_loop + 0.25·recency + 0.5·recent_use
+score = 1.0·entity + 0.6·keyword + loop_scale·0.35·open_loop + context_scale·(0.25·recency + 0.5·recent_use)
 ```
+
+Content signals (entity, keyword) say *which* agent the message is about; context signals (open loop, recent use, recency) carry messages that say nothing ("send it", "check again").
 
 | Signal | What it captures | Example |
 |---|---|---|
-| **entity** | The message names a person or email this agent dealt with. Exact email 1.0; name 0.7, scaled by how much of the name was said | "dave garcia" beats "dave" for Dave Garcia |
-| **keyword** | Rarity-weighted overlap with the agent's name (×3), people (×2), subjects (×2), summary (×1.5). Words found on no agent are ignored; one-letter typos are corrected | "any update on the vercel offer thing" |
+| **entity** | The message names a person or email this agent dealt with | "dave garcia" beats "dave" for Dave Garcia |
+| **keyword** | Rarity-weighted word overlap with the agent's fields | "any update on the vercel offer thing" |
 | **open_loop** | Unsent draft (1.0) or active reminder (0.5) | "send it" |
-| **recent_use** | Agents used in the last 3 turns (1.0, 0.6, 0.4) | "check again" |
+| **recent_use** | Agents used in the last 3 turns within a day (1.0, 0.6, 0.4) | "check again" |
 | **recency** | Last activity, halving every 3 days | tie-break only |
 
-Two guards: when the message clearly names something, recent use and recency are scaled to 0.4× so they cannot override it; and an unsent draft only gets full weight when a person was named, so it breaks ties but never beats a topic match.
+<details>
+<summary><b>Tokenizing: how "the", "send" and "please" disappear</b></summary>
+
+The message and every agent field go through the same tokenizer (`tokenize`):
+
+1. Lowercase and split on anything that is not a letter or digit (accented and non-Latin names stay whole).
+2. Drop words shorter than 3 letters ("is", "to"), **except letter+digit pairs** such as "q3", so Q3 and Q4 stay distinct.
+3. Drop about 100 stopwords: grammar (*the, and, for, about*), chat filler (*yes, okay, thanks, please*), and **command verbs** (*send, email, reply, check, find, tell*), which appear in almost every request and so say nothing about *which* agent is meant.
+
+"Any reply from Sanya about the budget?" → `[sanya, budget]`.
+</details>
+
+<details>
+<summary><b>Entity: is a person named?</b></summary>
+
+Each agent's people come from its Gmail tool calls: recipients, cc and bcc it sent to, senders and recipients of emails it read (parsed as `Name <email>`), and addresses in its instructions. The user's own address is skipped. For each indexed person (`_entity_scores`):
+
+- **Exact email in the message** → strength **1.0**.
+- **Otherwise a name match:** the person's display-name words plus their email handle split on `.` and `_` (`judy.patel@…` → `judy`, `patel`). Any overlap with the message counts, at
+  **0.7 × (0.6 + 0.4 × coverage)**, where coverage is the share of the name's parts said: "judy patel" → 0.70, "judy" → 0.56. Coverage uses the raw words, so a two-letter name like "Jo" still counts.
+- An agent matching several people gets +0.1 per extra person (max +0.3); the entity score is capped at 1.0.
+
+The match also becomes the `why` the model sees ("matches Judy Patel", "mentions alice@x.com").
+</details>
+
+<details>
+<summary><b>Keyword: what else matches?</b></summary>
+
+For the message words left after tokenizing (trailing "s" stripped, so "offers" = "offer"), against four token sets per agent: its **name**, **people** (names and handles), **subjects** and **summary** (`_keyword_scores`):
+
+1. **Rarity (idf):** `log(1 + N / (1 + df))`, where `df` is how many of the `N` agents contain the word. A word on 1 of 100 agents weighs ~3.9; on 50 of 100, ~1.1. Common words count for little on their own.
+2. **Field weight:** each word counts once, at the best field it appears in: name **3**, people **2**, subjects **2**, summary **1.5**.
+3. **Score** = Σ (idf × field weight) over the words this agent has ÷ Σ (idf × 3) over the message's words.
+4. **Words that appear on no agent are left out of the denominator.** "Any *update* on the vercel offer *thing*": "update" and "thing" match nothing, so they are ignored instead of diluting the real match (this alone took recall at 1,000 agents from 20% to 100%).
+5. **Typos:** a message word of 5+ letters that matches nothing is mapped to roster words one edit away (insert, delete, substitute or swap) with the same first letter, at most two per word: "Sarha" → "sarah", "reveiw" → "review".
+</details>
+
+<details>
+<summary><b>Guards: context must not override content</b></summary>
+
+- **context_scale.** If the message clearly names something (any entity match, or a keyword score ≥ 0.25), recency and recent use are multiplied by **0.4**, so "update on the Q3 budget" is not hijacked by whichever agent was used last. Otherwise they count in full, which is what makes "check again" work.
+- **loop_scale.** An unsent draft or reminder counts in full only when a person was named (it then picks between two threads with the same person). Otherwise it is scaled like context, so it never outranks a topic match.
+- **Minimum.** An agent needs a score ≥ 0.2 and at least one real signal to be listed.
+</details>
+
+**Worked example**, "any update on the q3 budget from Pat?":
+
+| Step | Result |
+|---|---|
+| Tokens | `[update, q3, budget, pat]` |
+| Entity | "pat" matches *Pat Rowe* on the **Q3 Budget** agent, 1 of 2 name parts → 0.56 |
+| Keyword | "update" is on no agent → ignored. "q3" and "budget" are in that agent's *name* (×3), "pat" in its *people* (×2) → ≈ 0.9. Another agent with only a "Q3 planning" subject matches "q3" alone and scores far lower |
+| Context | A person was named, so recency and recent use count at 0.4× |
+| Outcome | **Q3 Budget** ranks first by a wide margin |
+
+**Ties.** After scoring, agents that match equally are reported so the model asks instead of guessing (step 4): a *person* tie when they match the message's people equally but involve different people (three Judys; several threads with the same Judy are not a tie), and a *topic* tie when no person is named and they match the same message words strongly (Q3 and Q4 budget for "the budget"). Both ignore recent use and drafts, so context cannot hide a real tie.
+
+**Limits.** Matching is on words, so there are no synonyms ("dinner spots in Japan" does not find "Tokyo Restaurant Search"); the stopword list is hand-written; and automated senders ("LinkedIn Job Alerts") are indexed as people. The weights were tuned on test rosters and the offline eval; the retrieval log records what was shown and chosen so they can be learned later.
 
 **3. Shortlist.** The top 6 agents scoring ≥ 0.2, plus any agent that just reported back, plus up to 2 recently active agents as a safety net for content-free follow-ups. Each is rendered with `why` it was picked, when it was last active and its summary. An `<other_agents count=N>` line points the model to `find_agents(query)`, which searches everyone before a new agent is created.
 
