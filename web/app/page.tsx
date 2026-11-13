@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import SettingsModal, { useSettings } from '@/components/SettingsModal';
+import { ActiveAgents } from '@/components/chat/ActiveAgents';
+import { PendingItems } from '@/components/chat/PendingItems';
 import { ChatHeader } from '@/components/chat/ChatHeader';
 import { ChatInput } from '@/components/chat/ChatInput';
 import { ChatMessages } from '@/components/chat/ChatMessages';
@@ -229,7 +231,8 @@ export default function Page() {
 
   return (
     <main className="chat-bg min-h-screen p-4 sm:p-6">
-      <div className="chat-wrap flex flex-col">
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 lg:flex-row lg:items-start">
+      <div className="flex min-w-0 flex-1 flex-col">
         <ChatHeader onOpenSettings={openSettings} onClearHistory={triggerClearHistory} />
 
         <div className="card flex-1 overflow-hidden">
@@ -254,6 +257,12 @@ export default function Page() {
         </div>
 
         <SettingsModal open={open} onClose={closeSettings} settings={settings} onSave={setSettings} />
+      </div>
+
+      <div className="flex w-full flex-col gap-4 lg:sticky lg:top-6 lg:mt-[3.25rem] lg:w-80 lg:shrink-0">
+        <ActiveAgents />
+        <PendingItems />
+      </div>
       </div>
     </main>
   );

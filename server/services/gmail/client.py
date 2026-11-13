@@ -23,6 +23,10 @@ _PROFILE_CACHE_LOCK = threading.Lock()
 _ACTIVE_USER_ID_LOCK = threading.Lock()
 _ACTIVE_USER_ID: Optional[str] = None
 
+# Returned by every Gmail tool when no account is registered. Execution agents treat it as
+# non-retryable and stop immediately instead of spending LLM calls reasoning about it.
+GMAIL_NOT_CONNECTED_ERROR = "Gmail not connected. Please connect Gmail in settings first."
+
 
 def _normalized(value: Optional[str]) -> str:
     return (value or "").strip()
@@ -38,6 +42,37 @@ def _set_active_gmail_user_id(user_id: Optional[str]) -> None:
 def get_active_gmail_user_id() -> Optional[str]:
     with _ACTIVE_USER_ID_LOCK:
         return _ACTIVE_USER_ID
+
+
+def is_gmail_connected() -> bool:
+    """True when an account is registered, i.e. Gmail tools can run. Local check, no network."""
+
+    return get_active_gmail_user_id() is not None
+
+
+def get_active_gmail_email() -> Optional[str]:
+    """Best-effort address of the connected Gmail account, from the cached profile."""
+
+    profile = _get_cached_profile(get_active_gmail_user_id())
+    email = _extract_email(profile) if profile else None
+    return email.lower() if email else None
+
+
+def resolve_active_gmail_email() -> Optional[str]:
+    """Address of the connected account, fetching the Gmail profile once if it is not cached.
+
+    Used before sending, where an unknown sender is not acceptable. Network call on a cache miss.
+    """
+
+    cached = get_active_gmail_email()
+    if cached:
+        return cached
+    user_id = get_active_gmail_user_id()
+    if not user_id:
+        return None
+    profile = _fetch_profile_from_composio(user_id)
+    email = _extract_email(profile) if profile else None
+    return email.lower() if email else None
 
 
 def _gmail_import_client():
@@ -217,7 +252,10 @@ def initiate_connect(payload: GmailConnectPayload, settings: Settings) -> JSONRe
     _clear_cached_profile(user_id)
     try:
         client = _get_composio_client(settings)
-        req = client.connected_accounts.initiate(user_id=user_id, auth_config_id=auth_config_id)
+        accounts = client.connected_accounts
+        # Composio retired `initiate` for managed OAuth configs; `link` is the replacement.
+        connect = getattr(accounts, "link", None) or accounts.initiate
+        req = connect(user_id=user_id, auth_config_id=auth_config_id)
         data = {
             "ok": True,
             "redirect_url": getattr(req, "redirect_url", None) or getattr(req, "redirectUrl", None),

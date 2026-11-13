@@ -39,6 +39,14 @@ def _env_int(name: str, fallback: int) -> int:
         return fallback
 
 
+DEFAULT_MODEL = "anthropic/claude-sonnet-5.5"
+
+
+def _model(specific_env: str) -> str:
+    """Resolve a model: per-agent env var, then OPENPOKE_DEV_MODEL (cheap dev override), then default."""
+    return os.getenv(specific_env) or os.getenv("OPENPOKE_DEV_MODEL") or DEFAULT_MODEL
+
+
 class Settings(BaseModel):
     """Application settings with lightweight env fallbacks."""
 
@@ -50,12 +58,15 @@ class Settings(BaseModel):
     server_host: str = Field(default=os.getenv("OPENPOKE_HOST", "0.0.0.0"))
     server_port: int = Field(default=_env_int("OPENPOKE_PORT", 8001))
 
+    # Max seconds one execution agent may run per request (email searches can take several minutes)
+    execution_timeout_seconds: int = Field(default=_env_int("OPENPOKE_EXECUTION_TIMEOUT_SECONDS", 240))
+
     # LLM model selection
-    interaction_agent_model: str = Field(default="anthropic/claude-sonnet-4")
-    execution_agent_model: str = Field(default="anthropic/claude-sonnet-4")
-    execution_agent_search_model: str = Field(default="anthropic/claude-sonnet-4")
-    summarizer_model: str = Field(default="anthropic/claude-sonnet-4")
-    email_classifier_model: str = Field(default="anthropic/claude-sonnet-4")
+    interaction_agent_model: str = Field(default=_model("OPENPOKE_INTERACTION_AGENT_MODEL"))
+    execution_agent_model: str = Field(default=_model("OPENPOKE_EXECUTION_AGENT_MODEL"))
+    execution_agent_search_model: str = Field(default=_model("OPENPOKE_EXECUTION_AGENT_SEARCH_MODEL"))
+    summarizer_model: str = Field(default=_model("OPENPOKE_SUMMARIZER_MODEL"))
+    email_classifier_model: str = Field(default=_model("OPENPOKE_EMAIL_CLASSIFIER_MODEL"))
 
     # Credentials / integrations
     openrouter_api_key: Optional[str] = Field(default=os.getenv("OPENROUTER_API_KEY"))

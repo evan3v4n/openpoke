@@ -8,6 +8,19 @@ from dataclasses import dataclass
 from .agent import ExecutionAgent
 from .tools import get_tool_schemas, get_tool_registry
 from ...config import get_settings
+from ...services.execution import get_activity_tracker, get_agent_roster
+from ...services.execution.ambiguity import (
+    SEND_ACCOUNT_UNKNOWN_ERROR,
+    SEND_NOT_CONFIRMED_ERROR,
+    check_send,
+)
+from ...services.execution.people import extract_from_tool_call, find_draft_id, tool_succeeded
+from ...services.gmail import (
+    GMAIL_NOT_CONNECTED_ERROR,
+    get_active_gmail_email,
+    is_gmail_connected,
+    resolve_active_gmail_email,
+)
 from ...openrouter_client import request_chat_completion
 from ...logging_config import logger
 
@@ -42,6 +55,7 @@ class ExecutionAgentRuntime:
     # Main execution loop for running agent with LLM calls and tool execution
     async def execute(self, instructions: str) -> ExecutionResult:
         """Execute the agent with given instructions."""
+        activity = get_activity_tracker()
         try:
             # Build system prompt with history
             system_prompt = self.agent.build_system_prompt_with_history()
@@ -50,11 +64,14 @@ class ExecutionAgentRuntime:
             messages = [{"role": "user", "content": instructions}]
             tools_executed: List[str] = []
             final_response: Optional[str] = None
+            successful_tools = 0
+            fatal_error: Optional[str] = None
 
             for iteration in range(self.MAX_TOOL_ITERATIONS):
                 logger.info(
                     f"[{self.agent.name}] Requesting plan (iteration {iteration + 1})"
                 )
+                activity.add("thinking", "Thinking…" if iteration == 0 else "Thinking about the result…")
                 response = await self._make_llm_call(system_prompt, messages, with_tools=True)
                 assistant_message = response.get("choices", [{}])[0].get("message", {})
 
@@ -96,8 +113,20 @@ class ExecutionAgentRuntime:
 
                     tools_executed.append(tool_name)
                     logger.info(f"[{self.agent.name}] Executing tool: {tool_name}")
+                    activity.add("tool_call", f"{tool_name} {self._safe_json_dump(tool_args)}")
 
-                    success, result = await self._execute_tool(tool_name, tool_args)
+                    refusal, sender = self._check_send(tool_name, tool_args)
+                    if refusal:
+                        success, result = False, {"error": refusal}
+                    else:
+                        success, result = await self._execute_tool(tool_name, tool_args)
+                        if success and sender and isinstance(result, dict):
+                            result["sent_from"] = sender  # so the report can say which mailbox sent it
+                    if success:
+                        activity.add("tool_result", f"{tool_name} finished")
+                    else:
+                        err = result.get("error") if isinstance(result, dict) else str(result)
+                        activity.add("error", f"{tool_name} failed: {err}")
 
                     if success:
                         logger.info(f"[{self.agent.name}] Tool {tool_name} completed successfully")
@@ -112,6 +141,12 @@ class ExecutionAgentRuntime:
                         self._safe_json_dump(tool_args),
                         record_payload
                     )
+                    if success:
+                        self._record_roster_activity(tool_name, tool_args, result)
+                        if tool_succeeded(result):
+                            successful_tools += 1
+
+                    fatal_error = fatal_error or self._fatal_tool_error(result)
 
                     tool_message = {
                         "role": "tool",
@@ -120,13 +155,36 @@ class ExecutionAgentRuntime:
                     }
                     messages.append(tool_message)
 
+                if fatal_error:
+                    break
+
             else:
                 raise RuntimeError("Reached tool iteration limit without final response")
+
+            if fatal_error:
+                # Retrying cannot help (e.g. Gmail is not connected), so stop now instead of
+                # spending more LLM calls reasoning about an error that will not change.
+                logger.warning(f"[{self.agent.name}] Aborting run: {fatal_error}")
+                self.agent.record_response(f"Error: {fatal_error}")
+                return ExecutionResult(
+                    agent_name=self.agent.name,
+                    success=False,
+                    response=f"Could not complete the task: {fatal_error}",
+                    error=fatal_error,
+                    tools_executed=tools_executed,
+                )
 
             if final_response is None:
                 raise RuntimeError("LLM did not return a final response")
 
             self.agent.record_response(final_response)
+            # A run where every tool call failed describes the failure, not the agent's work;
+            # keep the previous summary so retrieval still reflects what this agent is for.
+            if successful_tools > 0 or not tools_executed:
+                owner = get_active_gmail_email()
+                get_agent_roster().set_summary(
+                    self.agent.name, final_response, redact=[owner] if owner else []
+                )
 
             return ExecutionResult(
                 agent_name=self.agent.name,
@@ -147,6 +205,68 @@ class ExecutionAgentRuntime:
                 response=failure_text,
                 error=error_msg
             )
+
+    # Errors that no retry can fix; the run should stop rather than call the LLM again
+    FATAL_ERRORS = (GMAIL_NOT_CONNECTED_ERROR, SEND_NOT_CONFIRMED_ERROR, SEND_ACCOUNT_UNKNOWN_ERROR)
+
+    @classmethod
+    def _fatal_tool_error(cls, result: Any) -> Optional[str]:
+        if isinstance(result, dict) and result.get("error") in cls.FATAL_ERRORS:
+            return result["error"]
+        return None
+
+    # Tools that put an email in someone else's inbox; none can be undone.
+    SEND_TOOLS = ("gmail_execute_draft", "gmail_reply_to_thread", "gmail_forward_email")
+
+    # Refuse a send the user's latest message did not clearly ask for, or from an unknown mailbox.
+    # Returns (refusal error or None, sending address when the send may go ahead).
+    def _check_send(self, tool_name: str, tool_args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        if tool_name not in self.SEND_TOOLS or not is_gmail_connected():
+            return None, None  # not a send, or the tool itself reports Gmail is not connected
+        try:
+            if tool_name == "gmail_execute_draft" and not check_send(
+                get_agent_roster(), self.agent.name, tool_args.get("draft_id")
+            ):
+                logger.warning(f"[{self.agent.name}] Refused to send draft {tool_args.get('draft_id')}: not confirmed")
+                return SEND_NOT_CONFIRMED_ERROR, None
+            sender = resolve_active_gmail_email()
+        except Exception as exc:  # a broken check must fail closed: no send
+            logger.error(f"[{self.agent.name}] Send check failed: {exc}")
+            return SEND_NOT_CONFIRMED_ERROR, None
+        if not sender:
+            logger.warning(f"[{self.agent.name}] Refused to send: connected Gmail address unknown")
+            return SEND_ACCOUNT_UNKNOWN_ERROR, None
+        return None, sender
+
+    # Index what a tool call touched (people, threads, subjects, drafts) so the agent can be found later
+    def _record_roster_activity(
+        self, tool_name: str, tool_args: Dict[str, Any], result: Any
+    ) -> None:
+        try:
+            if not tool_succeeded(result):
+                return
+
+            roster = get_agent_roster()
+            owner = get_active_gmail_email()
+            findings = extract_from_tool_call(
+                tool_args, result, exclude=[owner] if owner else []
+            )
+            roster.record_activity(
+                self.agent.name, findings.people, findings.thread_ids, findings.subjects
+            )
+
+            # Unsent drafts are open loops: the agent holding one is the likely target of "send it".
+            if tool_name == "gmail_create_draft":
+                roster.open_draft(
+                    self.agent.name,
+                    find_draft_id(result),
+                    recipient=str(tool_args.get("recipient_email") or ""),
+                    subject=str(tool_args.get("subject") or ""),
+                )
+            elif tool_name in ("gmail_execute_draft", "gmail_delete_draft"):
+                roster.close_draft(tool_args.get("draft_id"), agent_name=self.agent.name)
+        except Exception as exc:  # roster metadata must never break an agent run
+            logger.warning(f"[{self.agent.name}] Failed to update roster metadata: {exc}")
 
     # Execute OpenRouter API call with system prompt, messages, and optional tool schemas
     async def _make_llm_call(self, system_prompt: str, messages: List[Dict], with_tools: bool) -> Dict:

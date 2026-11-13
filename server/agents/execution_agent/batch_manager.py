@@ -9,7 +9,9 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from .runtime import ExecutionAgentRuntime, ExecutionResult
+from ...config import get_settings
 from ...logging_config import logger
+from ...services.execution import current_run, get_activity_tracker
 
 
 @dataclass
@@ -37,8 +39,10 @@ class ExecutionBatchManager:
     """Run execution agents and deliver their combined outcome."""
 
     # Initialize batch manager with timeout and coordination state for execution agents
-    def __init__(self, timeout_seconds: int = 90) -> None:
-        self.timeout_seconds = timeout_seconds
+    def __init__(self, timeout_seconds: Optional[int] = None) -> None:
+        self.timeout_seconds = (
+            timeout_seconds if timeout_seconds is not None else get_settings().execution_timeout_seconds
+        )
         self._pending: Dict[str, PendingExecution] = {}
         self._batch_lock = asyncio.Lock()
         self._batch_state: Optional[_BatchState] = None
@@ -56,6 +60,10 @@ class ExecutionBatchManager:
             request_id = str(uuid.uuid4())
 
         batch_id = await self._register_pending_execution(agent_name, instructions, request_id)
+
+        tracker = get_activity_tracker()
+        run_id = tracker.start(agent_name, instructions)
+        current_run.set(run_id)  # inherited by the task wait_for creates below
 
         try:
             logger.info(f"[{agent_name}] Execution started")
@@ -84,6 +92,11 @@ class ExecutionBatchManager:
             )
         finally:
             self._pending.pop(request_id, None)
+            current_run.set(None)
+
+        if result.error:
+            tracker.add("error", result.error, run_id=run_id)
+        tracker.finish(run_id, result.success, result.response or "")
 
         await self._complete_execution(batch_id, result, agent_name)
         return result
