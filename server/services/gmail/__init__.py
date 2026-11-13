@@ -4,6 +4,7 @@ from .client import (
     disconnect_account,
     execute_gmail_tool,
     fetch_status,
+    get_active_gmail_email,
     get_active_gmail_user_id,
     initiate_connect,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "initiate_connect",
     "disconnect_account",
     "get_active_gmail_user_id",
+    "get_active_gmail_email",
     "classify_email_importance",
     "ImportantEmailWatcher",
     "get_important_email_watcher",
