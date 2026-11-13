@@ -183,6 +183,10 @@ class TriggerService:
     def list_triggers(self, *, agent_name: str) -> List[TriggerRecord]:
         return self._store.list_for_agent(agent_name)
 
+    def active_counts(self) -> Dict[str, int]:
+        """Number of active triggers per agent (an open loop for agent retrieval)."""
+        return self._store.active_counts()
+
     def get_due_triggers(
         self, *, before: datetime, agent_name: Optional[str] = None
     ) -> List[TriggerRecord]:

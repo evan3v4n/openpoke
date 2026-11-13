@@ -101,6 +101,13 @@ class TriggerStore:
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
+    def active_counts(self) -> Dict[str, int]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT agent_name, COUNT(*) AS n FROM triggers WHERE status = 'active' GROUP BY agent_name"
+            ).fetchall()
+        return {row["agent_name"]: int(row["n"]) for row in rows}
+
     def fetch_due(
         self, agent_name: Optional[str], before_iso: str
     ) -> List[TriggerRecord]:
