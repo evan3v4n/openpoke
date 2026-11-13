@@ -31,7 +31,6 @@ from .system_prompt import get_system_prompt
 
 # Constants
 MAX_LLM_ITERATIONS = 8
-ERROR_GMAIL_NOT_CONNECTED = GMAIL_NOT_CONNECTED_ERROR
 ERROR_OPENROUTER_NOT_CONFIGURED = "OpenRouter API key not configured. Set OPENROUTER_API_KEY."
 ERROR_EMPTY_QUERY = "search_query must not be empty"
 ERROR_QUERY_REQUIRED = "query parameter is required"
@@ -104,7 +103,7 @@ async def task_email_search(search_query: str) -> Any:
     composio_user_id = _validate_gmail_connection()
     if not composio_user_id:
         logger.error(f"[EMAIL_SEARCH] Gmail not connected")
-        return {"error": ERROR_GMAIL_NOT_CONNECTED}
+        return {"error": GMAIL_NOT_CONNECTED_ERROR}
     
     api_key, model_or_error = _validate_openrouter_config()
     if not api_key:

@@ -34,7 +34,6 @@ class RosterStorage(unittest.TestCase):
         self.assertEqual(entry["people"]["alice@piedpiper.com"]["name"], "Alice Chen")
         self.assertEqual(entry["thread_ids"], ["t1"])
         self.assertEqual(entry["subjects"], ["Lunch tomorrow?"])
-        self.assertEqual([e["name"] for e in roster.find_by_person("chen")], ["Email to Alice"])
 
     def test_unknown_agent_activity_is_ignored(self) -> None:
         roster, _ = make_roster()

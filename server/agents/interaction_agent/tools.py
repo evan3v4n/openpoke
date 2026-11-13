@@ -135,7 +135,6 @@ _EXECUTION_BATCH_MANAGER = ExecutionBatchManager()
 def send_message_to_agent(agent_name: str, instructions: str) -> ToolResult:
     """Send instructions to an execution agent."""
     roster = get_agent_roster()
-    roster.load()
     existing_agents = set(roster.get_agents())
     is_new = agent_name not in existing_agents
 

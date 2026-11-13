@@ -104,10 +104,10 @@ def _clean_summary(text: str, redact: Iterable[str] = ()) -> str:
         if value:
             cleaned = re.sub(re.escape(value), "the user", cleaned, flags=re.IGNORECASE)
     cleaned = _EMPTY_PARENS.sub("", cleaned)
-    return _truncate(cleaned)
+    return truncate(cleaned)
 
 
-def _truncate(text: str, limit: int = SUMMARY_MAX_CHARS) -> str:
+def truncate(text: str, limit: int = SUMMARY_MAX_CHARS) -> str:
     collapsed = " ".join((text or "").split())
     if len(collapsed) <= limit:
         return collapsed
@@ -204,7 +204,7 @@ class AgentRoster:
                 (
                     name,
                     _slugify(name),
-                    _truncate(str(item.get("summary") or "")),
+                    truncate(str(item.get("summary") or "")),
                     created,
                     str(item.get("last_active_at") or created),
                 ),
@@ -227,9 +227,6 @@ class AgentRoster:
             imported += 1
         if imported:
             logger.info(f"Imported {imported} agents from legacy roster.json")
-
-    def load(self) -> None:
-        """Kept for backward compatibility; SQLite is always current."""
 
     # ----------------------------------------------------------------- mutations
 
@@ -524,19 +521,6 @@ class AgentRoster:
                 for r in conn.execute("SELECT name FROM agents ORDER BY last_active_at DESC, rowid DESC")
             ]
         return [entry for entry in (self.get_entry(n) for n in names) if entry]
-
-    def find_by_person(self, query: str) -> List[Dict[str, Any]]:
-        """Entries whose people match `query` (email or name, case-insensitive substring)."""
-
-        needle = (query or "").strip().lower()
-        if not needle:
-            return []
-        matched = {
-            agent
-            for agent, email, name in self.people_rows()
-            if needle in email or needle in name.lower()
-        }
-        return [e for e in self.get_entries() if e["name"] in matched]
 
     # ----------------------------------------------------------- retrieval logging
 

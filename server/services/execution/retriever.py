@@ -11,9 +11,7 @@ usable content ("yes, send it") produces no entity or keyword signal, so the
 ranking falls back to open loops (unsent drafts, active reminders), the agents the
 interaction agent dispatched to in the last few turns, and recency.
 
-Scoring is plain Python over the roster: with hundreds of agents it takes
-milliseconds and needs no extra service. (SQLite FTS5 BM25 was tried first; on a
-small roster its scores collapse to ~1e-6, so it is not used for ranking.)
+Scoring is plain Python over the roster; no extra service is needed.
 """
 
 from __future__ import annotations
@@ -27,7 +25,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
 from ...logging_config import logger
 from .people import EMAIL_RE
-from .roster import AgentRoster, get_agent_roster
+from .roster import AgentRoster, get_agent_roster, truncate
 
 # Ranking weights.
 W_ENTITY = 1.0
@@ -44,7 +42,6 @@ RECENT_USE_MAX_AGE_DAYS = 1.0
 
 # When the message itself names a person (or an agent by name), context (recent use,
 # recency) only breaks ties: it is scaled down so it cannot outrank an exact match.
-# A live "check judy brown" turn scored Chen 1.758 vs Brown 1.750 before this existed.
 CONTEXT_SCALE_WITH_CONTENT = 0.4
 STRONG_KEYWORD_SCORE = 0.25  # the query's words clearly appear in an agent's fields
 
@@ -96,13 +93,6 @@ def _age_days(iso: str) -> float:
     if then.tzinfo is None:
         then = then.replace(tzinfo=timezone.utc)
     return max(0.0, (datetime.now(timezone.utc) - then).total_seconds() / 86400.0)
-
-
-def _short(text: str, limit: int) -> str:
-    """One line, at most `limit` characters. Names and subjects come from email headers."""
-
-    collapsed = " ".join((text or "").split())
-    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1].rstrip() + "…"
 
 
 def humanize_age(iso: str) -> str:
@@ -259,14 +249,13 @@ class AgentRetriever:
             if keyword > 0 and not entity:
                 reasons.append("keyword match")
             for draft in draft_list:
-                label = _short(draft["recipient"], 60) or "someone"
-                subject = f' ("{_short(draft["subject"], 60)}")' if draft["subject"] else ""
+                label = truncate(draft["recipient"], 60) or "someone"
+                subject = f' ("{truncate(draft["subject"], 60)}")' if draft["subject"] else ""
                 reasons.append(f"unsent draft to {label}{subject}")
             if trigger_count:
                 reasons.append(f"{trigger_count} active reminder{'s' if trigger_count != 1 else ''}")
 
-            has_signal = bool(entity or keyword or loop or used)
-            has_signal = bool(entity or keyword) if require_content else has_signal
+            has_signal = bool(entity or keyword) if require_content else bool(entity or keyword or loop or used)
             if has_signal and score >= MIN_SCORE:
                 scored[name] = Candidate(
                     name=name,
@@ -376,7 +365,7 @@ class AgentRetriever:
                 hits = (handle | name_tokens) & query_tokens
                 if not hits:
                     continue
-                label = _short(display or email, 40)
+                label = truncate(display or email, 40)
                 # Saying the whole name beats saying one part of it ("dave garcia" vs "dave smith").
                 # Short parts ("Jo") are dropped by tokenize, so count them from the raw words.
                 parts = set(_TOKEN_RE.findall(display.lower())) or handle
