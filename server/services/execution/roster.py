@@ -344,7 +344,7 @@ class AgentRoster:
         """Close a draft once it is sent or deleted.
 
         Matches by draft id. If the id is unknown (it could not be parsed when the
-        draft was created), falls back to the agent's oldest open draft without an id.
+        draft was created), falls back to the agent's newest open draft without an id.
         """
 
         now = _now()
@@ -360,7 +360,7 @@ class AgentRoster:
                 conn.execute(
                     "UPDATE agent_drafts SET closed_at = ? WHERE id = ("
                     " SELECT id FROM agent_drafts WHERE agent_name = ? AND draft_id IS NULL"
-                    " AND closed_at IS NULL ORDER BY id LIMIT 1)",
+                    " AND closed_at IS NULL ORDER BY id DESC LIMIT 1)",
                     (now, agent_name),
                 )
 

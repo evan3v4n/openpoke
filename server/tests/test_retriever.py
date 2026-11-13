@@ -55,7 +55,7 @@ class Retrieval(unittest.TestCase):
         ranked = self.retriever.candidates("hello there", forced_names=["Q3 Budget"], recent_pad=1)
         self.assertIn("Q3 Budget", [c.name for c in ranked])
         self.assertEqual(ranked[0].reasons[0], "just reported back")
-        self.assertEqual(self.retriever.search("hello there"), [])  # search has no padding
+        self.assertEqual(self.retriever.search("hello there").candidates, [])  # search has no padding
 
     def test_old_agent_found_among_many(self) -> None:
         roster, _ = make_roster()
@@ -68,7 +68,7 @@ class Retrieval(unittest.TestCase):
         shortlist = retriever.candidates("what did zed say about the lease?")
         self.assertEqual(shortlist[0].name, "Email to Zed")
         self.assertLessEqual(len(shortlist), 8)  # bounded no matter how many agents exist
-        self.assertEqual(retriever.search("lease renewal")[0].name, "Email to Zed")
+        self.assertEqual(retriever.search("lease renewal").candidates[0].name, "Email to Zed")
 
     def test_duplicate_display_names_give_unique_reasons(self) -> None:
         roster, _ = make_roster()
@@ -112,8 +112,8 @@ class Retrieval(unittest.TestCase):
 
     def test_explicit_search_ignores_recent_use(self) -> None:
         self.roster.log_choice(None, "Q3 Budget", was_new=False, was_candidate=True)
-        self.assertEqual(self.retriever.search("check again"), [])
-        self.assertEqual(self.retriever.search("vercel offer")[0].name, "Vercel Job Offer")
+        self.assertEqual(self.retriever.search("check again").candidates, [])
+        self.assertEqual(self.retriever.search("vercel offer").candidates[0].name, "Vercel Job Offer")
 
     def test_entity_match_still_beats_recent_use(self) -> None:
         self.roster.log_choice(None, "Q3 Budget", was_new=False, was_candidate=True)

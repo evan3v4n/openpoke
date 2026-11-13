@@ -329,10 +329,10 @@ class AgentRetriever:
             return []
         return sorted(c.name for c in tied)
 
-    def search(self, query: str, limit: int = 8) -> List[Candidate]:
-        """Explicit lookup (the find_agents tool): signal-bearing matches only, no padding."""
+    def search(self, query: str, limit: int = 8) -> Shortlist:
+        """Explicit lookup (find_agents tool and HTTP route): signal-bearing matches only, no padding."""
 
-        return self.candidates(
+        return self.retrieve(
             query, limit=limit, recent_pad=0, use_recent=False, require_content=True
         )
 

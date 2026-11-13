@@ -1,7 +1,7 @@
 """Seed the real roster with a large, deliberately nasty set of agents for retrieval stress tests.
 
-    python -m server.tests.seed_brutal          # add ~230 agents (idempotent)
-    python -m server.tests.seed_brutal --clear  # remove only what this script added
+    python -m server.scripts.seed_brutal          # add ~230 agents (idempotent)
+    python -m server.scripts.seed_brutal --clear  # remove only what this script added
 
 Every summary ends in "[seed2]" so the rows are easy to find and remove. Run from the repo root.
 """

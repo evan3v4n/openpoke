@@ -122,9 +122,7 @@ class ExecutionAgentRuntime:
                         if tool_succeeded(result):
                             successful_tools += 1
 
-                    fatal_error = self._fatal_tool_error(result)
-                    if fatal_error:
-                        break
+                    fatal_error = fatal_error or self._fatal_tool_error(result)
 
                     tool_message = {
                         "role": "tool",

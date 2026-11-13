@@ -190,9 +190,7 @@ def send_message_to_agent(agent_name: str, instructions: str) -> ToolResult:
 # Search existing execution agents by person, subject or topic
 def find_agents(query: str) -> ToolResult:
     """Look up agents outside the shortlist shown in <active_agents>."""
-    shortlist = get_agent_retriever().retrieve(
-        query, limit=8, recent_pad=0, use_recent=False, require_content=True
-    )
+    shortlist = get_agent_retriever().search(query)
     matches = shortlist.candidates
 
     context = current_retrieval.get()
