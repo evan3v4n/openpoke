@@ -6,7 +6,7 @@ import json
 from typing import Any, Callable, Dict, List, Optional
 
 from server.services.execution import get_execution_agent_logs
-from server.services.gmail import execute_gmail_tool, get_active_gmail_user_id
+from server.services.gmail import GMAIL_NOT_CONNECTED_ERROR, execute_gmail_tool, get_active_gmail_user_id
 
 _GMAIL_AGENT_NAME = "gmail-execution-agent"
 
@@ -368,7 +368,7 @@ def gmail_create_draft(
     }
     composio_user_id = get_active_gmail_user_id()
     if not composio_user_id:
-        return {"error": "Gmail not connected. Please connect Gmail in settings first."}
+        return {"error": GMAIL_NOT_CONNECTED_ERROR}
     return _execute("GMAIL_CREATE_EMAIL_DRAFT", composio_user_id, arguments)
 
 
@@ -379,7 +379,7 @@ def gmail_execute_draft(
     arguments = {"draft_id": draft_id}
     composio_user_id = get_active_gmail_user_id()
     if not composio_user_id:
-        return {"error": "Gmail not connected. Please connect Gmail in settings first."}
+        return {"error": GMAIL_NOT_CONNECTED_ERROR}
     return _execute("GMAIL_SEND_DRAFT", composio_user_id, arguments)
 
 
@@ -396,7 +396,7 @@ def gmail_forward_email(
     }
     composio_user_id = get_active_gmail_user_id()
     if not composio_user_id:
-        return {"error": "Gmail not connected. Please connect Gmail in settings first."}
+        return {"error": GMAIL_NOT_CONNECTED_ERROR}
     return _execute("GMAIL_FORWARD_MESSAGE", composio_user_id, arguments)
 
 
@@ -423,7 +423,7 @@ def gmail_reply_to_thread(
     }
     composio_user_id = get_active_gmail_user_id()
     if not composio_user_id:
-        return {"error": "Gmail not connected. Please connect Gmail in settings first."}
+        return {"error": GMAIL_NOT_CONNECTED_ERROR}
     return _execute("GMAIL_REPLY_TO_THREAD", composio_user_id, arguments)
 
 
@@ -434,7 +434,7 @@ def gmail_delete_draft(
     arguments = {"draft_id": draft_id}
     composio_user_id = get_active_gmail_user_id()
     if not composio_user_id:
-        return {"error": "Gmail not connected. Please connect Gmail in settings first."}
+        return {"error": GMAIL_NOT_CONNECTED_ERROR}
     return _execute("GMAIL_DELETE_DRAFT", composio_user_id, arguments)
 
 
@@ -452,7 +452,7 @@ def gmail_get_contacts(
     }
     composio_user_id = get_active_gmail_user_id()
     if not composio_user_id:
-        return {"error": "Gmail not connected. Please connect Gmail in settings first."}
+        return {"error": GMAIL_NOT_CONNECTED_ERROR}
     return _execute("GMAIL_GET_CONTACTS", composio_user_id, arguments)
 
 
@@ -474,7 +474,7 @@ def gmail_get_people(
     }
     composio_user_id = get_active_gmail_user_id()
     if not composio_user_id:
-        return {"error": "Gmail not connected. Please connect Gmail in settings first."}
+        return {"error": GMAIL_NOT_CONNECTED_ERROR}
     return _execute("GMAIL_GET_PEOPLE", composio_user_id, arguments)
 
 
@@ -490,7 +490,7 @@ def gmail_list_drafts(
     }
     composio_user_id = get_active_gmail_user_id()
     if not composio_user_id:
-        return {"error": "Gmail not connected. Please connect Gmail in settings first."}
+        return {"error": GMAIL_NOT_CONNECTED_ERROR}
     return _execute("GMAIL_LIST_DRAFTS", composio_user_id, arguments)
 
 
@@ -512,7 +512,7 @@ def gmail_search_people(
         arguments["pageToken"] = page_token
     composio_user_id = get_active_gmail_user_id()
     if not composio_user_id:
-        return {"error": "Gmail not connected. Please connect Gmail in settings first."}
+        return {"error": GMAIL_NOT_CONNECTED_ERROR}
     return _execute("GMAIL_SEARCH_PEOPLE", composio_user_id, arguments)
 
 

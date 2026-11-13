@@ -59,6 +59,18 @@ class ExecutionRunGuards(unittest.IsolatedAsyncioTestCase):
     def summary(self) -> str:
         return self.roster.get_entry("Email to Alice")["summary"]
 
+    async def test_gmail_not_connected_stops_after_one_llm_call(self) -> None:
+        from server.services.gmail import GMAIL_NOT_CONNECTED_ERROR
+
+        self.tool.return_value = {"error": GMAIL_NOT_CONNECTED_ERROR}
+        self.script_llm(self.tool_call())  # a second LLM call would pop an empty queue and fail
+        result = await self.run_agent()
+
+        self.assertFalse(result.success)
+        self.assertEqual(self.llm_calls, 1)
+        self.assertIn("Gmail not connected", result.error)
+        self.assertEqual(self.summary(), "Original instructions about Alice")
+
     async def test_all_tools_failing_keeps_previous_summary(self) -> None:
         self.tool.return_value = {"error": "rate limited"}
         self.script_llm(self.tool_call(), {"content": "Sorry, the search failed."})

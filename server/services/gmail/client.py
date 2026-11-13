@@ -23,6 +23,10 @@ _PROFILE_CACHE_LOCK = threading.Lock()
 _ACTIVE_USER_ID_LOCK = threading.Lock()
 _ACTIVE_USER_ID: Optional[str] = None
 
+# Returned by every Gmail tool when no account is registered. Execution agents treat it as
+# non-retryable and stop immediately instead of spending LLM calls reasoning about it.
+GMAIL_NOT_CONNECTED_ERROR = "Gmail not connected. Please connect Gmail in settings first."
+
 
 def _normalized(value: Optional[str]) -> str:
     return (value or "").strip()
@@ -38,6 +42,12 @@ def _set_active_gmail_user_id(user_id: Optional[str]) -> None:
 def get_active_gmail_user_id() -> Optional[str]:
     with _ACTIVE_USER_ID_LOCK:
         return _ACTIVE_USER_ID
+
+
+def is_gmail_connected() -> bool:
+    """True when an account is registered, i.e. Gmail tools can run. Local check, no network."""
+
+    return get_active_gmail_user_id() is not None
 
 
 def get_active_gmail_email() -> Optional[str]:

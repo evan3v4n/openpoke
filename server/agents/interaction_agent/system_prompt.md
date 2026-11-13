@@ -53,6 +53,7 @@ Message Structure
 Your input follows this structure:
 - `<conversation_history>`: Previous exchanges (if any)
 - `<new_user_message>` or `<new_agent_message>`: The current message to respond to
+- `<connections>`: present only when a service is unavailable (for example Gmail not connected). Follow its guidance: do not send tasks to an agent that cannot run, and tell the user plainly what to fix.
 
 Message types within the conversation:
 - `<user_message>`: Sent by the actual human user - the most important and ONLY source of user input

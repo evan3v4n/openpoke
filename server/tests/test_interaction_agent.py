@@ -50,6 +50,23 @@ class Rendering(unittest.TestCase):
         stats = roster.retrieval_stats()
         self.assertEqual((stats["turns_logged"], stats["new_agents_created"]), (1, 1))
 
+    def test_connections_hint_only_when_gmail_is_down(self) -> None:
+        from server.agents.interaction_agent import agent as interaction_agent
+
+        roster, _ = make_roster()
+        patches = (
+            mock.patch.object(interaction_agent, "get_agent_roster", return_value=roster),
+            mock.patch.object(interaction_agent, "get_agent_retriever", return_value=AgentRetriever(roster)),
+        )
+        with patches[0], patches[1]:
+            with mock.patch("server.services.gmail.is_gmail_connected", return_value=False):
+                down = interaction_agent.prepare_message_with_history("email bob", "", "user")[0]["content"]
+            with mock.patch("server.services.gmail.is_gmail_connected", return_value=True):
+                up = interaction_agent.prepare_message_with_history("email bob", "", "user")[0]["content"]
+        self.assertIn("<connections>", down)
+        self.assertIn("gmail: not connected", down)
+        self.assertNotIn("<connections>", up)
+
 
 class AmbiguityPrompt(JudyRosterCase):
     """What the interaction agent sees when several agents match the message."""

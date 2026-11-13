@@ -39,6 +39,9 @@ def prepare_message_with_history(
     sections.append(
         f"<active_agents>\n{_render_active_agents(latest_text, message_type)}\n</active_agents>"
     )
+    connections = _render_connections()
+    if connections:
+        sections.append(f"<connections>\n{connections}\n</connections>")
     sections.append(_render_current_turn(latest_text, message_type))
 
     content = "\n\n".join(sections)
@@ -51,6 +54,19 @@ def _render_conversation_history(transcript: str) -> str:
     if not history:
         history = "None"
     return f"<conversation_history>\n{history}\n</conversation_history>"
+
+
+# Report unavailable services so the interaction agent does not dispatch work that cannot run
+def _render_connections() -> str:
+    from ...services.gmail import is_gmail_connected  # lazy: avoids an import cycle at startup
+
+    if is_gmail_connected():
+        return ""
+    return (
+        "gmail: not connected. Anything that needs email will fail until the user connects Gmail "
+        "in settings. Do not send email tasks to an agent; tell the user to connect Gmail first. "
+        "Other tasks (reminders, general questions) are unaffected."
+    )
 
 
 # Show only the agents most relevant to this message, with why, instead of the whole roster

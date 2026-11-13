@@ -10,7 +10,7 @@ from .tools import get_tool_schemas, get_tool_registry
 from ...config import get_settings
 from ...services.execution import get_agent_roster
 from ...services.execution.people import extract_from_tool_call, find_draft_id, tool_succeeded
-from ...services.gmail import get_active_gmail_email
+from ...services.gmail import GMAIL_NOT_CONNECTED_ERROR, get_active_gmail_email
 from ...openrouter_client import request_chat_completion
 from ...logging_config import logger
 
@@ -54,6 +54,7 @@ class ExecutionAgentRuntime:
             tools_executed: List[str] = []
             final_response: Optional[str] = None
             successful_tools = 0
+            fatal_error: Optional[str] = None
 
             for iteration in range(self.MAX_TOOL_ITERATIONS):
                 logger.info(
@@ -121,6 +122,10 @@ class ExecutionAgentRuntime:
                         if tool_succeeded(result):
                             successful_tools += 1
 
+                    fatal_error = self._fatal_tool_error(result)
+                    if fatal_error:
+                        break
+
                     tool_message = {
                         "role": "tool",
                         "tool_call_id": call_id or tool_name,
@@ -128,8 +133,24 @@ class ExecutionAgentRuntime:
                     }
                     messages.append(tool_message)
 
+                if fatal_error:
+                    break
+
             else:
                 raise RuntimeError("Reached tool iteration limit without final response")
+
+            if fatal_error:
+                # Retrying cannot help (e.g. Gmail is not connected), so stop now instead of
+                # spending more LLM calls reasoning about an error that will not change.
+                logger.warning(f"[{self.agent.name}] Aborting run: {fatal_error}")
+                self.agent.record_response(f"Error: {fatal_error}")
+                return ExecutionResult(
+                    agent_name=self.agent.name,
+                    success=False,
+                    response=f"Could not complete the task: {fatal_error}",
+                    error=fatal_error,
+                    tools_executed=tools_executed,
+                )
 
             if final_response is None:
                 raise RuntimeError("LLM did not return a final response")
@@ -162,6 +183,13 @@ class ExecutionAgentRuntime:
                 response=failure_text,
                 error=error_msg
             )
+
+    # Errors that no retry can fix; the run should stop rather than call the LLM again
+    @staticmethod
+    def _fatal_tool_error(result: Any) -> Optional[str]:
+        if isinstance(result, dict) and result.get("error") == GMAIL_NOT_CONNECTED_ERROR:
+            return GMAIL_NOT_CONNECTED_ERROR
+        return None
 
     # Index what a tool call touched (people, threads, subjects, drafts) so the agent can be found later
     def _record_roster_activity(

@@ -10,6 +10,7 @@ from server.logging_config import logger
 from server.openrouter_client import request_chat_completion
 from server.services.execution import get_execution_agent_logs
 from server.services.gmail import (
+    GMAIL_NOT_CONNECTED_ERROR,
     EmailTextCleaner,
     ProcessedEmail,
     execute_gmail_tool,
@@ -30,7 +31,7 @@ from .system_prompt import get_system_prompt
 
 # Constants
 MAX_LLM_ITERATIONS = 8
-ERROR_GMAIL_NOT_CONNECTED = "Gmail not connected. Please connect Gmail in settings first."
+ERROR_GMAIL_NOT_CONNECTED = GMAIL_NOT_CONNECTED_ERROR
 ERROR_OPENROUTER_NOT_CONFIGURED = "OpenRouter API key not configured. Set OPENROUTER_API_KEY."
 ERROR_EMPTY_QUERY = "search_query must not be empty"
 ERROR_QUERY_REQUIRED = "query parameter is required"
