@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from .agent import ExecutionAgent
 from .tools import get_tool_schemas, get_tool_registry
 from ...config import get_settings
+from ...services.execution import get_agent_roster
+from ...services.execution.people import extract_from_tool_call, find_draft_id, tool_succeeded
+from ...services.gmail import get_active_gmail_email
 from ...openrouter_client import request_chat_completion
 from ...logging_config import logger
 
@@ -50,6 +53,7 @@ class ExecutionAgentRuntime:
             messages = [{"role": "user", "content": instructions}]
             tools_executed: List[str] = []
             final_response: Optional[str] = None
+            successful_tools = 0
 
             for iteration in range(self.MAX_TOOL_ITERATIONS):
                 logger.info(
@@ -112,6 +116,10 @@ class ExecutionAgentRuntime:
                         self._safe_json_dump(tool_args),
                         record_payload
                     )
+                    if success:
+                        self._record_roster_activity(tool_name, tool_args, result)
+                        if tool_succeeded(result):
+                            successful_tools += 1
 
                     tool_message = {
                         "role": "tool",
@@ -127,6 +135,13 @@ class ExecutionAgentRuntime:
                 raise RuntimeError("LLM did not return a final response")
 
             self.agent.record_response(final_response)
+            # A run where every tool call failed describes the failure, not the agent's work;
+            # keep the previous summary so retrieval still reflects what this agent is for.
+            if successful_tools > 0 or not tools_executed:
+                owner = get_active_gmail_email()
+                get_agent_roster().set_summary(
+                    self.agent.name, final_response, redact=[owner] if owner else []
+                )
 
             return ExecutionResult(
                 agent_name=self.agent.name,
@@ -147,6 +162,36 @@ class ExecutionAgentRuntime:
                 response=failure_text,
                 error=error_msg
             )
+
+    # Index what a tool call touched (people, threads, subjects, drafts) so the agent can be found later
+    def _record_roster_activity(
+        self, tool_name: str, tool_args: Dict[str, Any], result: Any
+    ) -> None:
+        try:
+            if not tool_succeeded(result):
+                return
+
+            roster = get_agent_roster()
+            owner = get_active_gmail_email()
+            findings = extract_from_tool_call(
+                tool_args, result, exclude=[owner] if owner else []
+            )
+            roster.record_activity(
+                self.agent.name, findings.people, findings.thread_ids, findings.subjects
+            )
+
+            # Unsent drafts are open loops: the agent holding one is the likely target of "send it".
+            if tool_name == "gmail_create_draft":
+                roster.open_draft(
+                    self.agent.name,
+                    find_draft_id(result),
+                    recipient=str(tool_args.get("recipient_email") or ""),
+                    subject=str(tool_args.get("subject") or ""),
+                )
+            elif tool_name in ("gmail_execute_draft", "gmail_delete_draft"):
+                roster.close_draft(tool_args.get("draft_id"), agent_name=self.agent.name)
+        except Exception as exc:  # roster metadata must never break an agent run
+            logger.warning(f"[{self.agent.name}] Failed to update roster metadata: {exc}")
 
     # Execute OpenRouter API call with system prompt, messages, and optional tool schemas
     async def _make_llm_call(self, system_prompt: str, messages: List[Dict], with_tools: bool) -> Dict:

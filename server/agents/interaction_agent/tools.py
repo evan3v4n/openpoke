@@ -7,7 +7,12 @@ from typing import Any, Optional
 
 from ...logging_config import logger
 from ...services.conversation import get_conversation_log
-from ...services.execution import get_agent_roster, get_execution_agent_logs
+from ...services.execution import (
+    current_retrieval,
+    get_agent_retriever,
+    get_agent_roster,
+    get_execution_agent_logs,
+)
 from ..execution_agent.batch_manager import ExecutionBatchManager
 
 
@@ -37,6 +42,24 @@ TOOL_SCHEMAS = [
                     "instructions": {"type": "string", "description": "Instructions for the agent to execute."},
                 },
                 "required": ["agent_name", "instructions"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_agents",
+            "description": "Search existing execution agents by person (name or email), subject or topic. Use before creating a new agent when the agent you need is not listed in <active_agents>.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "A person's name or email address, or a few topic keywords (e.g. 'alice@example.com', 'Vercel offer').",
+                    },
+                },
+                "required": ["query"],
                 "additionalProperties": False,
             },
         },
@@ -116,8 +139,22 @@ def send_message_to_agent(agent_name: str, instructions: str) -> ToolResult:
     existing_agents = set(roster.get_agents())
     is_new = agent_name not in existing_agents
 
-    if is_new:
-        roster.add_agent(agent_name)
+    from ...services.gmail import get_active_gmail_email  # lazy: avoids an import cycle at startup
+
+    owner = get_active_gmail_email()
+    roster.touch(agent_name, instructions, exclude=[owner] if owner else [])
+
+    context = current_retrieval.get()
+    if context is not None:
+        try:
+            roster.log_choice(
+                context.retrieval_id,
+                agent_name,
+                was_new=is_new,
+                was_candidate=agent_name in context.shown,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"Could not log agent choice: {exc}")
 
     get_execution_agent_logs().record_request(agent_name, instructions)
 
@@ -148,6 +185,26 @@ def send_message_to_agent(agent_name: str, instructions: str) -> ToolResult:
             "new_agent_created": is_new,
         },
     )
+
+
+# Search existing execution agents by person, subject or topic
+def find_agents(query: str) -> ToolResult:
+    """Look up agents outside the shortlist shown in <active_agents>."""
+    shortlist = get_agent_retriever().retrieve(query, limit=8, recent_pad=0, use_recent=False)
+    matches = shortlist.candidates
+
+    context = current_retrieval.get()
+    if context is not None:
+        context.shown.update(match.name for match in matches)
+
+    payload = {
+        "query": query,
+        "total_matches": shortlist.matching_total,
+        "agents": [match.to_dict() for match in matches],
+    }
+    if shortlist.tied_names:
+        payload["match_equally"] = shortlist.tied_names
+    return ToolResult(success=True, payload=payload)
 
 
 # Send immediate message to user and record in conversation history
@@ -227,6 +284,8 @@ def handle_tool_call(name: str, arguments: Any) -> ToolResult:
 
         if name == "send_message_to_agent":
             return send_message_to_agent(**args)
+        if name == "find_agents":
+            return find_agents(**args)
         if name == "send_message_to_user":
             return send_message_to_user(**args)
         if name == "send_draft":
