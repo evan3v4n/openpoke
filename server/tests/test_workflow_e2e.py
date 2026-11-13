@@ -233,7 +233,7 @@ class Routes(unittest.TestCase):
             self.addCleanup(patcher.stop)
         app = FastAPI()
         app.include_router(agents_routes.router)
-        self.client = TestClient(app)
+        self.client = TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000))
 
     def test_list_search_and_stats(self) -> None:
         listing = self.client.get("/agents").json()
@@ -246,6 +246,17 @@ class Routes(unittest.TestCase):
         self.assertEqual(self.client.get("/agents/search").status_code, 422)
 
         self.assertIn("turns_logged", self.client.get("/agents/retrieval-stats").json())
+
+    def test_rejects_cross_site_and_non_local_requests(self) -> None:
+        self.assertEqual(
+            self.client.get("/agents", headers={"Origin": "https://evil.example"}).status_code, 403
+        )
+        self.assertEqual(
+            self.client.get("/agents", headers={"Origin": "http://localhost:3000"}).status_code, 200
+        )
+        self.assertEqual(
+            self.client.get("/agents", headers={"Host": "rebind.evil.example"}).status_code, 403
+        )
 
 
 class NameCoverage(unittest.TestCase):

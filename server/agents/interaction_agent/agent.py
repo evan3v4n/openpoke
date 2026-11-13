@@ -14,6 +14,7 @@ from ...services.execution import (
 )
 from ...services.execution.retriever import humanize_age, reporting_agents
 
+MAX_WHY_CHARS = 240  # cap on the reasons shown per agent
 MAX_TIED_NAMES = 12  # names listed in an <ambiguity> hint
 
 _prompt_path = Path(__file__).parent / "system_prompt.md"
@@ -100,7 +101,8 @@ def _render_active_agents(latest_text: str, message_type: str) -> str:
         if candidate.last_active_at:
             attrs += f' last_active="{humanize_age(candidate.last_active_at)}"'
         if candidate.reasons:
-            attrs += f' why="{escape("; ".join(candidate.reasons), quote=True)}"'
+            why = " ".join("; ".join(candidate.reasons).split())[:MAX_WHY_CHARS]
+            attrs += f' why="{escape(why, quote=True)}"'
         rendered.append(f"<agent {attrs}>{escape(candidate.summary)}</agent>")
 
     # Several agents match a user request equally (e.g. ten Judys): list all of them so the model

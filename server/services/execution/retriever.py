@@ -63,7 +63,7 @@ ENTITY_EXTRA_CAP = 0.3
 # Field weights for keyword matching.
 FIELD_WEIGHTS = {"name": 3.0, "people": 2.0, "subjects": 2.0, "summary": 1.5}
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_TOKEN_RE = re.compile(r"[^\W_]+")  # unicode letters/digits, so "José" and CJK names tokenize
 _REPORT_RE = re.compile(r"^\[(?:SUCCESS|FAILED)\]\s+(.+?):", re.MULTILINE)
 _STOPWORDS = frozenset(
     """
@@ -96,6 +96,13 @@ def _age_days(iso: str) -> float:
     if then.tzinfo is None:
         then = then.replace(tzinfo=timezone.utc)
     return max(0.0, (datetime.now(timezone.utc) - then).total_seconds() / 86400.0)
+
+
+def _short(text: str, limit: int) -> str:
+    """One line, at most `limit` characters. Names and subjects come from email headers."""
+
+    collapsed = " ".join((text or "").split())
+    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1].rstrip() + "…"
 
 
 def humanize_age(iso: str) -> str:
@@ -252,8 +259,8 @@ class AgentRetriever:
             if keyword > 0 and not entity:
                 reasons.append("keyword match")
             for draft in draft_list:
-                label = draft["recipient"] or "someone"
-                subject = f' ("{draft["subject"]}")' if draft["subject"] else ""
+                label = _short(draft["recipient"], 60) or "someone"
+                subject = f' ("{_short(draft["subject"], 60)}")' if draft["subject"] else ""
                 reasons.append(f"unsent draft to {label}{subject}")
             if trigger_count:
                 reasons.append(f"{trigger_count} active reminder{'s' if trigger_count != 1 else ''}")
@@ -369,7 +376,7 @@ class AgentRetriever:
                 hits = (handle | name_tokens) & query_tokens
                 if not hits:
                     continue
-                label = display or email
+                label = _short(display or email, 40)
                 # Saying the whole name beats saying one part of it ("dave garcia" vs "dave smith").
                 # Short parts ("Jo") are dropped by tokenize, so count them from the raw words.
                 parts = set(_TOKEN_RE.findall(display.lower())) or handle

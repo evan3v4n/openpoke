@@ -8,10 +8,31 @@ from ..services.execution import get_agent_retriever, get_agent_roster
 
 
 
-# These endpoints expose mailbox-derived data (emails, subjects, drafts): local clients only
+_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _hostname(value: str) -> str:
+    """Hostname of a Host header value or an Origin URL, without scheme or port."""
+
+    value = value.split("://", 1)[-1].split("/", 1)[0]
+    if value.startswith("["):  # [::1]:8001
+        return value[1:].split("]", 1)[0].lower()
+    return value.rsplit(":", 1)[0].lower() if value.count(":") == 1 else value.lower()
+
+
+# These endpoints expose mailbox-derived data (emails, subjects, drafts): local use only.
+# The peer address alone is not enough, because CORS allows any website the user visits to
+# call 127.0.0.1 from their browser. So the Host header (DNS rebinding) and the Origin header
+# (cross-site requests) must be local too.
 def _require_local(request: Request) -> None:
-    host = request.client.host if request.client else ""
-    if host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+    peer = request.client.host if request.client else ""
+    host = _hostname(request.headers.get("host", ""))
+    origin = request.headers.get("origin")
+    if (
+        peer not in _LOCAL_HOSTS
+        or host not in _LOCAL_HOSTS
+        or (origin is not None and _hostname(origin) not in _LOCAL_HOSTS)
+    ):
         raise HTTPException(status_code=403, detail="Agents endpoints are only available locally")
 
 
